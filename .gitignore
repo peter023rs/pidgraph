@@ -1,0 +1,5 @@
+data/
+*.pdf
+outputs/
+.venv/
+__pycache__/
