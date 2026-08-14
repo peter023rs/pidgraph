@@ -43,8 +43,8 @@ Sheets; the symbol part of a Convention Profile.
 
 **Review Workbench**:
 The web UI where a process engineer inspects the digitized P&ID overlaid on
-the original Sheet and passes or rejects each detection. Every verdict is
-kept as a labeled example.
+the original Sheet and gives each detection a verdict: pass, reject, or
+edit (supplying the correction). Every verdict is kept as a labeled example.
 _Avoid_: viewer (that is hazop-ai's read-only overlay)
 
 **DEXPI JSON**:
