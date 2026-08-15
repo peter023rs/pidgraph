@@ -1,0 +1,118 @@
+{
+  "_comment": [
+    "DEXPI JSON contract shape, mirrored from hazop-ai's plant_model_dexpi.json",
+    "per ADR-0001. Pins key structure, value types, and enum vocabularies only —",
+    "no extracted drawing content enters git. Type language: str, int, num,",
+    "str|null, point ([num, num]), bbox ([num, num, num, num]),",
+    "polyline ([[num, num], ...]), str[], int[].",
+    "pidgraphAdditiveKeys are the only extra keys a record may carry."
+  ],
+  "schema": "hazop-l1/dexpi-aligned/v1",
+  "topLevelKeys": ["schema", "sourceDrawing", "conceptualModel", "crossSheetLinks"],
+  "conceptualModelKeys": [
+    "Equipment",
+    "Nozzle",
+    "PipingComponent",
+    "ProcessInstrumentationFunction",
+    "PipingNetworkSegment",
+    "PipeOffPageConnector",
+    "PipingNode"
+  ],
+  "recordShapes": {
+    "Equipment": {
+      "required": {
+        "id": "str",
+        "sheet": "int",
+        "position": "point",
+        "tagName": "str|null",
+        "shape": "str",
+        "bbox": "bbox"
+      },
+      "optional": {}
+    },
+    "Nozzle": {
+      "required": {
+        "id": "str",
+        "sheet": "int",
+        "position": "point",
+        "equipment": "str",
+        "subTagName": "str|null"
+      },
+      "optional": {}
+    },
+    "PipingComponent": {
+      "required": {
+        "id": "str",
+        "sheet": "int",
+        "position": "point",
+        "componentClass": "str"
+      },
+      "optional": {}
+    },
+    "ProcessInstrumentationFunction": {
+      "required": {
+        "id": "str",
+        "sheet": "int",
+        "position": "point",
+        "tagName": "str",
+        "componentClass": "str"
+      },
+      "optional": {}
+    },
+    "PipingNetworkSegment": {
+      "required": {
+        "id": "str",
+        "sheet": "int",
+        "from": "str",
+        "to": "str",
+        "segmentClass": "str",
+        "length": "num",
+        "polyline": "polyline"
+      },
+      "optional": {
+        "lineNumber": "str[]",
+        "flowDirection": "str",
+        "flowDirectionSource": "str"
+      }
+    },
+    "PipeOffPageConnector": {
+      "required": {
+        "id": "str",
+        "sheet": "int",
+        "position": "point",
+        "labels": "str[]"
+      },
+      "optional": {}
+    },
+    "PipingNode": {
+      "required": {
+        "id": "str",
+        "sheet": "int",
+        "position": "point",
+        "nodeType": "str"
+      },
+      "optional": {}
+    }
+  },
+  "crossSheetLink": {
+    "required": {
+      "lineNumber": "str",
+      "sheets": "int[]"
+    },
+    "optional": {}
+  },
+  "vocab": {
+    "flowDirection": ["from_to", "to_from"],
+    "flowDirectionSource": [
+      "arrow",
+      "psv",
+      "propagated",
+      "conservation",
+      "check-valve",
+      "connector"
+    ],
+    "nodeType": ["junction", "corner", "dead-end"],
+    "segmentClass": ["PipingNetworkSegment", "SignalLine"]
+  },
+  "pidgraphAdditiveKeys": ["confidence", "provenance"]
+}
