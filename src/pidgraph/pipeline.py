@@ -34,12 +34,14 @@ from .seams import PipelineConfig, build_components
 
 
 def _detection_record(sheet: Sheet,
+                      profile: ConventionProfile,
                       normalization: Normalization,
                       symbols: list[SymbolDetection],
                       lines: list[LineDetection],
                       texts: list[TextDetection]) -> dict:
     return {
         "sheet": sheet.number,
+        "profile": profile.identity_record(),
         "normalization": normalization.as_record(),
         "symbols": [asdict(s) for s in symbols],
         "lines": [asdict(l) for l in lines],
@@ -66,8 +68,8 @@ def digitize(document: Document,
         # assembled from here on is in original Sheet coordinates
         symbols, lines, texts = map_detections_to_original(
             normalization, symbols, lines, texts)
-        records.append(_detection_record(sheet, normalization, symbols,
-                                         lines, texts))
+        records.append(_detection_record(sheet, profile, normalization,
+                                         symbols, lines, texts))
         assemblies.append(assemble_sheet(sheet, symbols, lines, texts,
                                          profile))
 

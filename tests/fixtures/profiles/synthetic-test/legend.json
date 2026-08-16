@@ -1,0 +1,10 @@
+{
+ "tank": {"role": "Equipment", "equipment_type": "tank", "shape": "capsule"},
+ "nozzle": {"role": "Nozzle"},
+ "gate_valve": {"role": "PipingComponent", "equipment_type": "valve",
+                "component_class": "GateValve"},
+ "instrument_bubble": {"role": "ProcessInstrumentationFunction",
+                       "equipment_type": "instrument"},
+ "opc": {"role": "PipeOffPageConnector", "equipment_type": "line"},
+ "flow_arrow": {"role": "FlowArrow"}
+}

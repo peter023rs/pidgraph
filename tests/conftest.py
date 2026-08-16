@@ -10,18 +10,20 @@ Process topology (all coordinates fixed):
     PI-100 (instrument bubble) sits above the valve, unconnected.
 """
 
+from pathlib import Path
+
 import pytest
 
 from pidgraph.model import (
     ConventionProfile,
     Document,
-    LegendEntry,
     LineAnnotation,
     Sheet,
     SheetAnnotations,
     SymbolAnnotation,
     TextAnnotation,
 )
+from pidgraph.profile import load_profile
 
 SHEET_W, SHEET_H = 400, 200
 
@@ -95,30 +97,7 @@ def synthetic_document() -> Document:
 
 @pytest.fixture
 def synthetic_profile() -> ConventionProfile:
-    return ConventionProfile(
-        name="synthetic-test",
-        version="0",
-        legend={
-            "tank": LegendEntry(role="Equipment", equipment_type="tank",
-                                shape="capsule"),
-            "nozzle": LegendEntry(role="Nozzle"),
-            "gate_valve": LegendEntry(role="PipingComponent",
-                                      equipment_type="valve",
-                                      component_class="GateValve"),
-            "instrument_bubble": LegendEntry(
-                role="ProcessInstrumentationFunction",
-                equipment_type="instrument"),
-            # s2_pml types OPC terminals as "line" (hazop-ai EquipmentType)
-            "opc": LegendEntry(role="PipeOffPageConnector",
-                               equipment_type="line"),
-            "flow_arrow": LegendEntry(role="FlowArrow"),
-        },
-        tag_grammar={
-            "equipment_tag": r"[A-Z]-\d{3}",
-            "instrument_tag": r"[A-Z]{2}-\d{3}",
-            "line_number": r"\d{2,3}-[A-Z]{2}-\d{3}",
-            "opc_label": r"[A-Z]{2}\d{2}-\d{4}",
-        },
-        line_semantics={"pipe": "PipingNetworkSegment",
-                        "signal": "SignalLine"},
-    )
+    """Loaded from the checked-in fixture bundle (ticket 04), so the whole
+    suite exercises the on-disk profile loader."""
+    return load_profile(Path(__file__).parent / "fixtures" / "profiles"
+                        / "synthetic-test")

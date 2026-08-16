@@ -77,14 +77,19 @@ class LegendEntry:
 @dataclass(frozen=True)
 class ConventionProfile:
     """Per-company adaptation bundle: Legend Dictionary, tag grammar,
-    line-type semantics. Minimal in-memory form; versioned artifact storage
-    is ticket 04."""
+    line-type semantics. In-memory form of the versioned on-disk bundle
+    loaded by profile.load_profile()."""
     name: str
     version: str
     legend: Mapping[str, LegendEntry]
     tag_grammar: Mapping[str, str]           # text_class -> fullmatch regex
     line_semantics: Mapping[str, str] = field(default_factory=dict)
                                              # line_class -> DEXPI segmentClass
+
+    def identity_record(self) -> dict[str, str]:
+        """The stamp run artifacts carry: which profile version produced
+        them (reproducibility, ticket 04)."""
+        return {"name": self.name, "version": self.version}
 
 
 # --------------------------------------------------------------------------

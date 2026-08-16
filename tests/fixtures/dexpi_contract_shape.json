@@ -5,10 +5,12 @@
     "no extracted drawing content enters git. Type language: str, int, num,",
     "str|null, point ([num, num]), bbox ([num, num, num, num]),",
     "polyline ([[num, num], ...]), str[], int[].",
-    "pidgraphAdditiveKeys are the only extra keys a record may carry."
+    "pidgraphAdditiveKeys are the only extra keys a record may carry;",
+    "pidgraphAdditiveTopLevelKeys the only extra top-level keys."
   ],
   "schema": "hazop-l1/dexpi-aligned/v1",
   "topLevelKeys": ["schema", "sourceDrawing", "conceptualModel", "crossSheetLinks"],
+  "pidgraphAdditiveTopLevelKeys": ["conventionProfile"],
   "conceptualModelKeys": [
     "Equipment",
     "Nozzle",
@@ -114,5 +116,12 @@
     "nodeType": ["junction", "corner", "dead-end"],
     "segmentClass": ["PipingNetworkSegment", "SignalLine"]
   },
-  "pidgraphAdditiveKeys": ["confidence", "provenance"]
+  "pidgraphAdditiveKeys": ["confidence", "provenance"],
+  "conventionProfileShape": {
+    "required": {
+      "name": "str",
+      "version": "str"
+    },
+    "optional": {}
+  }
 }

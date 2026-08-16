@@ -16,6 +16,10 @@ from .model import ConventionProfile, Document, Point, Provenance
 
 SCHEMA = "hazop-l1/dexpi-aligned/v1"
 
+# The contract's segmentClass vocabulary — profile line semantics must map
+# into it, validated at profile load so a bad mapping never surfaces mid-run.
+SEGMENT_CLASSES = frozenset({"PipingNetworkSegment", "SignalLine"})
+
 
 def _xy(point: Point) -> list[float]:
     return [round(point[0], 1), round(point[1], 1)]
@@ -181,6 +185,7 @@ def emit_plant_model(assemblies: list[SheetAssembly], document: Document,
     return {
         "schema": SCHEMA,
         "sourceDrawing": document.name,
+        "conventionProfile": profile.identity_record(),
         "conceptualModel": conceptual,
         "crossSheetLinks": cross_sheet,
     }

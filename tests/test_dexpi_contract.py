@@ -58,9 +58,12 @@ def test_emitted_plant_model_matches_mirrored_contract(
     model = digitize(synthetic_document, synthetic_profile).plant_model
     model = json.loads(json.dumps(model))  # must round-trip as JSON
 
-    assert set(model) == set(CONTRACT["topLevelKeys"])
+    assert set(model) == (set(CONTRACT["topLevelKeys"])
+                          | set(CONTRACT["pidgraphAdditiveTopLevelKeys"]))
     assert model["schema"] == CONTRACT["schema"]
     assert isinstance(model["sourceDrawing"], str)
+    _assert_record(model["conventionProfile"],
+                   CONTRACT["conventionProfileShape"], "conventionProfile")
     assert set(model["conceptualModel"]) == set(
         CONTRACT["conceptualModelKeys"])
 
