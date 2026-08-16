@@ -25,21 +25,22 @@ from .model import (
     SymbolDetection,
     TextDetection,
 )
+from .normalize import (
+    Normalization,
+    map_detections_to_original,
+    normalize_sheet,
+)
 from .seams import PipelineConfig, build_components
 
 
-def _normalize(sheet: Sheet) -> Sheet:
-    """Raster normalization (deskew, resolution, binarize) — identity until
-    ticket 03."""
-    return sheet
-
-
 def _detection_record(sheet: Sheet,
+                      normalization: Normalization,
                       symbols: list[SymbolDetection],
                       lines: list[LineDetection],
                       texts: list[TextDetection]) -> dict:
     return {
         "sheet": sheet.number,
+        "normalization": normalization.as_record(),
         "symbols": [asdict(s) for s in symbols],
         "lines": [asdict(l) for l in lines],
         "texts": [asdict(t) for t in texts],
@@ -56,12 +57,17 @@ def digitize(document: Document,
     records = []
     assemblies = []
     for sheet in document.sheets:
-        sheet = _normalize(sheet)
-        symbols = detector.detect(sheet, profile)
-        lines = extract_line_network(sheet)
-        texts = decode_tags(recognizer.recognize(sheet, profile),
+        normalized, normalization = normalize_sheet(sheet)
+        symbols = detector.detect(normalized, profile)
+        lines = extract_line_network(normalized)
+        texts = decode_tags(recognizer.recognize(normalized, profile),
                             profile.tag_grammar)
-        records.append(_detection_record(sheet, symbols, lines, texts))
+        # extraction ran in the normalized frame; everything recorded or
+        # assembled from here on is in original Sheet coordinates
+        symbols, lines, texts = map_detections_to_original(
+            normalization, symbols, lines, texts)
+        records.append(_detection_record(sheet, normalization, symbols,
+                                         lines, texts))
         assemblies.append(assemble_sheet(sheet, symbols, lines, texts,
                                          profile))
 
