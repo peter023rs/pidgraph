@@ -7,7 +7,7 @@ name = "pidgraph"
 version = "0.1.0"
 description = "Standalone P&ID digitization: scanned Sheets -> plant topology graph -> DEXPI JSON + Neo4j (s2_pml schema)."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["pypdf>=4.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
