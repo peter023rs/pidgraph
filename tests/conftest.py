@@ -6,7 +6,8 @@ Process topology (all coordinates fixed):
     T-101 (tank) --run1--> V-101 (gate valve) --run2-- T-102 (tank)
         run1 carries a flow arrow (direction evidence) and line number
         150-GA-001; run2 has no direction evidence.
-    T-102 --run3-- off-page connector DW02-0003 (an L with one corner).
+    T-102 --run3-- off-page connector DW02-0003 (run3 is an L: down from
+        the tank bottom, one corner, right into the connector).
     PI-100 (instrument bubble) sits above the valve, unconnected.
 """
 
@@ -33,7 +34,7 @@ SYMBOLS = (
     SymbolAnnotation("gate_valve", (180.0, 100.0, 200.0, 120.0)),
     SymbolAnnotation("tank", (320.0, 80.0, 360.0, 140.0)),
     SymbolAnnotation("instrument_bubble", (180.0, 30.0, 200.0, 50.0)),
-    SymbolAnnotation("opc", (325.0, 165.0, 355.0, 185.0)),
+    SymbolAnnotation("opc", (365.0, 160.0, 395.0, 180.0)),
     SymbolAnnotation("flow_arrow", (115.0, 105.0, 125.0, 115.0),
                      direction=(1.0, 0.0)),
 )
@@ -41,7 +42,7 @@ SYMBOLS = (
 LINES = (
     LineAnnotation(((66.0, 110.0), (180.0, 110.0))),                  # run1
     LineAnnotation(((200.0, 110.0), (320.0, 110.0))),                 # run2
-    LineAnnotation(((340.0, 140.0), (340.0, 152.0), (340.0, 165.0))), # run3
+    LineAnnotation(((340.0, 140.0), (340.0, 170.0), (365.0, 170.0))), # run3
 )
 
 TEXTS = (
@@ -50,7 +51,7 @@ TEXTS = (
     TextAnnotation("T-102", "equipment_tag", (320.0, 60.0, 360.0, 72.0)),
     TextAnnotation("PI-100", "instrument_tag", (178.0, 50.0, 202.0, 62.0)),
     TextAnnotation("150-GA-001", "line_number", (90.0, 90.0, 150.0, 100.0)),
-    TextAnnotation("DW02-0003", "opc_label", (327.0, 168.0, 353.0, 180.0)),
+    TextAnnotation("DW02-0003", "opc_label", (367.0, 163.0, 393.0, 177.0)),
 )
 
 

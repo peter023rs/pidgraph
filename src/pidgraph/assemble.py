@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from itertools import combinations
 
 from .model import (
     Bbox,
@@ -78,10 +79,19 @@ class FlowEvidence:
 
 
 @dataclass
+class Junction:
+    """A branch point where several runs meet without a symbol between
+    them — loose run endpoints that coincide on the Sheet."""
+    point: Point
+    runs: list[Run] = field(default_factory=list)
+
+
+@dataclass
 class Run:
     detection: LineDetection
     attachments: tuple[Terminal | None, Terminal | None]
     attached_via: tuple[SymbolDetection | None, SymbolDetection | None]
+    junctions: tuple[Junction | None, Junction | None] = (None, None)
     line_number_texts: list[TextDetection] = field(default_factory=list)
     flow: FlowEvidence | None = None
 
@@ -92,6 +102,7 @@ class SheetAssembly:
     terminals: list[Terminal]
     arrows: list[SymbolDetection]
     runs: list[Run]
+    junctions: list[Junction] = field(default_factory=list)
 
 
 def _center(bbox: Bbox) -> Point:
@@ -156,6 +167,37 @@ def _attach_endpoint(point: Point, terminals: list[Terminal]
     return None, None
 
 
+def _group_junctions(runs: list[Run]) -> list[Junction]:
+    """Loose run endpoints that coincide (within snap tolerance) are one
+    branch point: the runs meet there. A lone loose endpoint stays a dead
+    end."""
+    groups: list[tuple[Point, list[tuple[Run, int]]]] = []
+    for run in runs:
+        for end in (0, 1):
+            if run.attachments[end] is not None:
+                continue
+            point = run.detection.polyline[0 if end == 0 else -1]
+            for anchor, members in groups:
+                if _dist(anchor, point) <= _SNAP_TOL:
+                    members.append((run, end))
+                    break
+            else:
+                groups.append((point, [(run, end)]))
+
+    junctions = []
+    for anchor, members in groups:
+        if len(members) < 2:
+            continue
+        junction = Junction(point=anchor)
+        for run, end in members:
+            junction.runs.append(run)
+            ends = list(run.junctions)
+            ends[end] = junction
+            run.junctions = (ends[0], ends[1])
+        junctions.append(junction)
+    return junctions
+
+
 def _seed_flow(run: Run, arrow: SymbolDetection) -> None:
     if arrow.direction is None:
         raise ValueError(
@@ -207,6 +249,7 @@ def assemble_sheet(sheet: Sheet,
         runs.append(Run(detection=line,
                         attachments=(start[0], end[0]),
                         attached_via=(start[1], end[1])))
+    junctions = _group_junctions(runs)
 
     for text in texts:
         if text.text_class == "line_number":
@@ -245,14 +288,15 @@ def assemble_sheet(sheet: Sheet,
         _seed_flow(on_run[0], arrow)
 
     return SheetAssembly(sheet=sheet, terminals=terminals, arrows=arrows,
-                         runs=runs)
+                         runs=runs, junctions=junctions)
 
 
 def build_plant_graph(assemblies: list[SheetAssembly]) -> dict:
     """The s2_pml equipment-level graph (ADR-0001): terminals become nodes,
-    runs between terminals become edges split by direction evidence.
-    equipment_type values stay inside hazop-ai's EquipmentType vocabulary
-    ("vessel" is its fallback too)."""
+    runs between terminals become edges split by direction evidence, and
+    terminals meeting at junctions become undirected edges. Every edge
+    carries confidence and provenance. equipment_type values stay inside
+    hazop-ai's EquipmentType vocabulary ("vessel" is its fallback too)."""
     nodes = []
     for assembly in assemblies:
         for terminal in assembly.terminals:
@@ -272,7 +316,7 @@ def build_plant_graph(assemblies: list[SheetAssembly]) -> dict:
         for run in assembly.runs:
             start, end = run.attachments
             if start is None or end is None:
-                continue  # dead ends stay geometry; no equipment edge
+                continue  # loose ends handled below (junction) or dropped
             source, target = start.node_tag(), end.node_tag()
             edge_attrs: dict = {"direction": "unknown"}
             if run.flow is not None:
@@ -285,7 +329,65 @@ def build_plant_graph(assemblies: list[SheetAssembly]) -> dict:
             if run.line_number_texts:
                 edge_attrs["line_numbers"] = [
                     t.string for t in run.line_number_texts]
+            detection = run.detection
+            edge_attrs["confidence"] = detection.confidence
+            edge_attrs["provenance"] = (
+                f"{detection.provenance.component}: "
+                f"{detection.provenance.evidence}")
             edges.append({"source": source, "target": target,
                           "attributes": edge_attrs})
+        edges.extend(_junction_edges(assembly))
 
     return {"nodes": nodes, "edges": edges}
+
+
+def _junction_edges(assembly: SheetAssembly) -> list[dict]:
+    """Terminals joined through a branch point (or a chain of them) are
+    connected: every terminal pair in a junction-connected group of runs
+    gets an undirected edge. Direction never crosses a junction here —
+    propagating flow evidence through the network is ticket 07's job."""
+    roots: dict[int, int] = {id(j): id(j) for j in assembly.junctions}
+
+    def find(a: int) -> int:
+        while roots[a] != a:
+            roots[a] = roots[roots[a]]
+            a = roots[a]
+        return a
+
+    for run in assembly.runs:
+        j0, j1 = run.junctions
+        if j0 is not None and j1 is not None:
+            roots[find(id(j0))] = find(id(j1))
+
+    components: dict[int, list[Run]] = {}
+    for run in assembly.runs:
+        for root in {find(id(j)) for j in run.junctions if j is not None}:
+            components.setdefault(root, []).append(run)
+
+    edges = []
+    for root in sorted(components):
+        runs = components[root]
+        terminals: list[Terminal] = []
+        for run in runs:
+            for terminal in run.attachments:
+                if terminal is not None and terminal not in terminals:
+                    terminals.append(terminal)
+        if len(terminals) < 2:
+            continue  # a branch that reaches at most one plant item
+        terminals.sort(key=Terminal.node_tag)
+        run_ids = sorted(run.detection.id for run in runs)
+        attrs: dict = {
+            "direction": "unknown",
+            "confidence": min(run.detection.confidence for run in runs),
+            "provenance": (
+                f"{runs[0].detection.provenance.component}: runs "
+                f"{', '.join(run_ids)} meeting at a junction"),
+        }
+        line_numbers = sorted({text.string for run in runs
+                               for text in run.line_number_texts})
+        if line_numbers:
+            attrs["line_numbers"] = line_numbers
+        for a, b in combinations(terminals, 2):
+            edges.append({"source": a.node_tag(), "target": b.node_tag(),
+                          "attributes": dict(attrs)})
+    return edges

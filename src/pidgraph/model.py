@@ -85,6 +85,8 @@ class ConventionProfile:
     tag_grammar: Mapping[str, str]           # text_class -> fullmatch regex
     line_semantics: Mapping[str, str] = field(default_factory=dict)
                                              # line_class -> DEXPI segmentClass
+    line_styles: Mapping[str, str] = field(default_factory=dict)
+                                             # stroke style -> line_class
 
     def identity_record(self) -> dict[str, str]:
         """The stamp run artifacts carry: which profile version produced

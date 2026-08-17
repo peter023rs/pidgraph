@@ -91,7 +91,7 @@ def test_dexpi_model_reflects_the_drawn_sheet(synthetic_document,
 
     corners = [n for n in conceptual["PipingNode"]
                if n["nodeType"] == "corner"]
-    assert [n["position"] for n in corners] == [[340.0, 152.0]]
+    assert [n["position"] for n in corners] == [[340.0, 170.0]]
 
 
 def test_default_store_emits_honest_cypher(synthetic_document,

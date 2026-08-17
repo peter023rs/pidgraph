@@ -42,6 +42,14 @@ def test_bundle_loads_identity_and_all_three_parts():
     assert profile.tag_grammar["equipment_tag"] == r"[A-Z]-\d{3}"
     assert profile.line_semantics == {"pipe": "PipingNetworkSegment",
                                       "signal": "SignalLine"}
+    assert profile.line_styles == {"solid": "pipe", "dashed": "signal"}
+
+
+def test_line_styles_part_is_optional(tmp_path):
+    bundle = editable_copy(tmp_path)
+    (bundle / "line_styles.json").unlink()
+
+    assert load_profile(bundle).line_styles == {}
 
 
 # --------------------------------------------------------------------------
@@ -105,6 +113,15 @@ def test_line_semantics_outside_dexpi_vocab_fails_at_load(tmp_path):
 
     with pytest.raises(ProfileError,
                        match=r"line_semantics\.json: .*'Pipe'"):
+        load_profile(bundle)
+
+
+def test_line_style_outside_extractor_vocab_fails_at_load(tmp_path):
+    bundle = editable_copy(tmp_path)
+    rewrite(bundle, "line_styles.json",
+            lambda d: d.__setitem__("dotted", "signal"))
+
+    with pytest.raises(ProfileError, match=r"line_styles\.json: .*'dotted'"):
         load_profile(bundle)
 
 

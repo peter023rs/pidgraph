@@ -7,6 +7,9 @@ Legend Sheet ingest in v1), holding an identity file and the three parts:
     legend.json          symbol_class -> LegendEntry fields
     tag_grammar.json     text_class -> fullmatch regex
     line_semantics.json  line_class -> DEXPI segmentClass
+    line_styles.json     stroke style -> line_class (optional part: where a
+                         style is left unmapped, extracted runs keep the
+                         style name as their line_class)
 
 Loading validates the whole bundle up front and reports every problem at
 once — a bad profile fails here, never mid-run.
@@ -25,6 +28,9 @@ ROLES = frozenset({
     "Equipment", "PipingComponent", "ProcessInstrumentationFunction",
     "PipeOffPageConnector", "Nozzle", "FlowArrow",
 })
+
+# stroke styles the line network extractor can actually tell apart
+LINE_STYLES = frozenset({"solid", "dashed"})
 
 _IDENTITY_KEYS = ("name", "version")
 _LEGEND_OPTIONAL = ("equipment_type", "component_class", "shape")
@@ -143,6 +149,23 @@ def _line_semantics(raw: dict, problems: list[str]) -> dict[str, str]:
     return semantics
 
 
+def _line_styles(raw: dict, problems: list[str]) -> dict[str, str]:
+    styles = {}
+    for style, line_class in raw.items():
+        if style not in LINE_STYLES:
+            problems.append(
+                f"line_styles.json: {style!r} is not a stroke style the "
+                f"extractor distinguishes {sorted(LINE_STYLES)}")
+            continue
+        if not isinstance(line_class, str) or not line_class:
+            problems.append(
+                f"line_styles.json: {style!r} must map to a non-empty "
+                f"line_class string, got {line_class!r}")
+            continue
+        styles[style] = line_class
+    return styles
+
+
 def load_profile(bundle: Path | str) -> ConventionProfile:
     bundle = Path(bundle)
     problems: list[str] = []
@@ -150,11 +173,18 @@ def load_profile(bundle: Path | str) -> ConventionProfile:
     parts = {part: _read_part(bundle, f"{part}.json", problems)
              for part in ("profile", "legend", "tag_grammar",
                           "line_semantics")}
+    # line_styles is the one optional part: absent means "classify nothing"
+    if (bundle / "line_styles.json").is_file():
+        parts["line_styles"] = _read_part(bundle, "line_styles.json",
+                                          problems)
+    else:
+        parts["line_styles"] = None
 
     name = version = ""
     legend: dict[str, LegendEntry] = {}
     grammar: dict[str, str] = {}
     semantics: dict[str, str] = {}
+    styles: dict[str, str] = {}
     if parts["profile"] is not None:
         name, version = _identity(parts["profile"], problems)
     if parts["legend"] is not None:
@@ -163,8 +193,11 @@ def load_profile(bundle: Path | str) -> ConventionProfile:
         grammar = _tag_grammar(parts["tag_grammar"], problems)
     if parts["line_semantics"] is not None:
         semantics = _line_semantics(parts["line_semantics"], problems)
+    if parts["line_styles"] is not None:
+        styles = _line_styles(parts["line_styles"], problems)
 
     if problems:
         raise ProfileError(bundle, problems)
     return ConventionProfile(name=name, version=version, legend=legend,
-                             tag_grammar=grammar, line_semantics=semantics)
+                             tag_grammar=grammar, line_semantics=semantics,
+                             line_styles=styles)

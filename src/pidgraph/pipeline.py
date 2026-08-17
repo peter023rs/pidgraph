@@ -61,7 +61,7 @@ def digitize(document: Document,
     for sheet in document.sheets:
         normalized, normalization = normalize_sheet(sheet)
         symbols = detector.detect(normalized, profile)
-        lines = extract_line_network(normalized)
+        lines = extract_line_network(normalized, symbols, profile)
         texts = decode_tags(recognizer.recognize(normalized, profile),
                             profile.tag_grammar)
         # extraction ran in the normalized frame; everything recorded or

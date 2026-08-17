@@ -67,6 +67,10 @@ def _rel(edge: dict) -> tuple[str, dict]:
     props = {}
     if attrs.get("line_numbers"):
         props["line_numbers"] = attrs["line_numbers"]
+    if attrs.get("confidence") is not None:
+        props["detection_confidence"] = attrs["confidence"]
+    if attrs.get("provenance"):
+        props["provenance"] = attrs["provenance"]
     if edge.get("line_tag"):
         props["line_tag"] = edge["line_tag"]
     if direction == "known":

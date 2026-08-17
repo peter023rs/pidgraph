@@ -48,6 +48,7 @@ class _SheetEmitter:
         self._s = 0
         self._terminal_ids: dict[int, str] = {}
         self._nozzle_ids: dict[int, str] = {}
+        self._junction_ids: dict[int, str] = {}
 
     def _next_node_id(self) -> str:
         node_id = f"p{self.sheet}n{self._n}"  # id scheme mirrors hazop-ai
@@ -108,7 +109,29 @@ class _SheetEmitter:
             return self._nozzle_ids[id(via_nozzle)]
         if terminal is not None:
             return self._terminal_ids[id(terminal)]
+        junction = run.junctions[end]
+        if junction is not None:
+            return self._emit_junction_node(junction)
         return self._emit_piping_node(point, "dead-end", run)
+
+    def _emit_junction_node(self, junction) -> str:
+        """One shared PipingNode per branch point, however many runs meet
+        there."""
+        if id(junction) not in self._junction_ids:
+            node_id = self._next_node_id()
+            runs = junction.runs
+            self.records["PipingNode"].append({
+                "id": node_id,
+                "sheet": self.sheet,
+                "position": _xy(junction.point),
+                "nodeType": "junction",
+                "confidence": min(r.detection.confidence for r in runs),
+                "provenance": {
+                    "component": runs[0].detection.provenance.component,
+                    "evidence": "junction of lines " + ", ".join(
+                        sorted(r.detection.id for r in runs))}})
+            self._junction_ids[id(junction)] = node_id
+        return self._junction_ids[id(junction)]
 
     def _emit_piping_node(self, point: Point, node_type: str,
                           run: Run) -> str:
