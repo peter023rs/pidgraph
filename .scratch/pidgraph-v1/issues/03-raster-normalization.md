@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (Walking skeleton).
 
-**Status:** done
+**Status:** resolved
 
 - [x] Normalization runs as the first Raster Path stage on every Sheet: deskew, resolution-normalize to a target scale, binarize.
 - [x] A programmatically skewed fixture Sheet (known rotation) is recovered to within a stated tolerance, verified deterministically.

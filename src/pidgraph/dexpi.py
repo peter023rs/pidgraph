@@ -169,9 +169,13 @@ class _SheetEmitter:
             if run.line_number_texts:
                 segment["lineNumber"] = [t.string
                                          for t in run.line_number_texts]
-            if run.flow is not None:
-                segment["flowDirection"] = run.flow.orientation
-                segment["flowDirectionSource"] = run.flow.source
+            flow = run.flow  # None without evidence, and None on conflict
+            if flow is not None:
+                segment["flowDirection"] = flow.orientation
+                # propagation provenance: "propagated" (contract vocab)
+                # distinguishes carried direction from on-run evidence
+                segment["flowDirectionSource"] = (
+                    "propagated" if flow.propagated else flow.source)
             self.records["PipingNetworkSegment"].append(segment)
 
     def emit(self, line_semantics: Mapping[str, str]) -> dict[str, list]:

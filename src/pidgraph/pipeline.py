@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Sequence
 
-from .assemble import assemble_sheet, build_plant_graph
+from .assemble import SheetAssembly, assemble_sheet, build_plant_graph
 from .dexpi import emit_plant_model
 from .lexicon import decode_tags
 from .lines import extract_line_network
@@ -20,6 +21,7 @@ from .model import (
     ConventionProfile,
     Document,
     LineDetection,
+    Provenance,
     RunArtifacts,
     Sheet,
     SymbolDetection,
@@ -30,7 +32,12 @@ from .normalize import (
     map_detections_to_original,
     normalize_sheet,
 )
-from .seams import PipelineConfig, build_components
+from .seams import (
+    PipelineConfig,
+    SymbolDetector,
+    TextRecognizer,
+    build_components,
+)
 
 
 def _detection_record(sheet: Sheet,
@@ -49,6 +56,86 @@ def _detection_record(sheet: Sheet,
     }
 
 
+def digitize_sheet(sheet: Sheet,
+                   profile: ConventionProfile,
+                   detector: SymbolDetector,
+                   recognizer: TextRecognizer,
+                   ) -> tuple[dict, SheetAssembly]:
+    """One Sheet through the Raster Path: its detection record (in
+    original Sheet coordinates) and its assembled topology."""
+    normalized, normalization = normalize_sheet(sheet)
+    symbols = detector.detect(normalized, profile)
+    lines = extract_line_network(normalized, symbols, profile)
+    texts = decode_tags(recognizer.recognize(normalized, profile),
+                        profile.tag_grammar)
+    # extraction ran in the normalized frame; everything recorded or
+    # assembled from here on is in original Sheet coordinates
+    symbols, lines, texts = map_detections_to_original(
+        normalization, symbols, lines, texts)
+    record = _detection_record(sheet, profile, normalization,
+                               symbols, lines, texts)
+    return record, assemble_sheet(sheet, symbols, lines, texts, profile)
+
+
+def detections_from_record(record: dict) -> tuple[
+        list[SymbolDetection], list[LineDetection], list[TextDetection]]:
+    """Rebuild the detection dataclasses from a detection record — the
+    inverse of _detection_record's detection lists, so a resumed batch run
+    (ticket 08) reassembles a completed Sheet without re-running
+    extraction. Values pass through verbatim (a JSON round trip preserves
+    them); only the list-vs-tuple shape is restored."""
+    symbols = [
+        SymbolDetection(
+            id=s["id"], sheet=s["sheet"], symbol_class=s["symbol_class"],
+            bbox=tuple(s["bbox"]), confidence=s["confidence"],
+            provenance=Provenance(**s["provenance"]),
+            direction=(None if s["direction"] is None
+                       else tuple(s["direction"])))
+        for s in record["symbols"]]
+    lines = [
+        LineDetection(
+            id=l["id"], sheet=l["sheet"],
+            polyline=tuple(tuple(p) for p in l["polyline"]),
+            line_class=l["line_class"], confidence=l["confidence"],
+            provenance=Provenance(**l["provenance"]))
+        for l in record["lines"]]
+    texts = [
+        TextDetection(
+            id=t["id"], sheet=t["sheet"], string=t["string"],
+            text_class=t["text_class"], bbox=tuple(t["bbox"]),
+            confidence=t["confidence"],
+            provenance=Provenance(**t["provenance"]),
+            raw_string=t["raw_string"], correction=t["correction"],
+            resolved=t["resolved"], candidates=tuple(t["candidates"]))
+        for t in record["texts"]]
+    return symbols, lines, texts
+
+
+def write_run_outputs(out_dir: Path, plant_model: dict,
+                      records: Sequence[dict],
+                      store_summary: dict) -> dict[str, str]:
+    """Write the file outputs a run leaves behind — the DEXPI plant model
+    and the per-Sheet detection records — returning their paths (plus the
+    store's, when it wrote one)."""
+    paths: dict[str, str] = {}
+    model_path = out_dir / "plant_model_dexpi.json"
+    model_path.write_text(
+        json.dumps(plant_model, ensure_ascii=False, indent=1),
+        encoding="utf-8")
+    paths["plant_model"] = str(model_path)
+    detections_dir = out_dir / "detections"
+    detections_dir.mkdir(parents=True, exist_ok=True)
+    for record in records:
+        record_path = detections_dir / f"sheet_{record['sheet']}.json"
+        record_path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=1),
+            encoding="utf-8")
+        paths[f"detections/sheet_{record['sheet']}"] = str(record_path)
+    if store_summary.get("path"):
+        paths["plant_graph"] = store_summary["path"]
+    return paths
+
+
 def digitize(document: Document,
              profile: ConventionProfile,
              config: PipelineConfig | None = None,
@@ -59,19 +146,10 @@ def digitize(document: Document,
     records = []
     assemblies = []
     for sheet in document.sheets:
-        normalized, normalization = normalize_sheet(sheet)
-        symbols = detector.detect(normalized, profile)
-        lines = extract_line_network(normalized, symbols, profile)
-        texts = decode_tags(recognizer.recognize(normalized, profile),
-                            profile.tag_grammar)
-        # extraction ran in the normalized frame; everything recorded or
-        # assembled from here on is in original Sheet coordinates
-        symbols, lines, texts = map_detections_to_original(
-            normalization, symbols, lines, texts)
-        records.append(_detection_record(sheet, profile, normalization,
-                                         symbols, lines, texts))
-        assemblies.append(assemble_sheet(sheet, symbols, lines, texts,
-                                         profile))
+        record, assembly = digitize_sheet(sheet, profile, detector,
+                                          recognizer)
+        records.append(record)
+        assemblies.append(assembly)
 
     plant_graph = build_plant_graph(assemblies)
     plant_model = emit_plant_model(assemblies, document, profile)
@@ -81,21 +159,8 @@ def digitize(document: Document,
 
     paths: dict[str, str] = {}
     if out_dir is not None:
-        model_path = out_dir / "plant_model_dexpi.json"
-        model_path.write_text(
-            json.dumps(plant_model, ensure_ascii=False, indent=1),
-            encoding="utf-8")
-        paths["plant_model"] = str(model_path)
-        detections_dir = out_dir / "detections"
-        detections_dir.mkdir(parents=True, exist_ok=True)
-        for record in records:
-            record_path = detections_dir / f"sheet_{record['sheet']}.json"
-            record_path.write_text(
-                json.dumps(record, ensure_ascii=False, indent=1),
-                encoding="utf-8")
-            paths[f"detections/sheet_{record['sheet']}"] = str(record_path)
-        if store_summary.get("path"):
-            paths["plant_graph"] = store_summary["path"]
+        paths = write_run_outputs(out_dir, plant_model, records,
+                                  store_summary)
 
     return RunArtifacts(
         detection_records=tuple(records),

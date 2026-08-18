@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (Walking skeleton).
 
-**Status:** done
+**Status:** resolved
 
 - [x] The line network stage runs the classical-CV sequence binarize → thin → vectorize → junction analysis → split runs at symbol boxes; deterministic, no seam, no ML.
 - [x] A synthetic fixture with a T-junction yields three runs meeting at one junction node.

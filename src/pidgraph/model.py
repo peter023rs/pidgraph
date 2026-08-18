@@ -126,6 +126,10 @@ class LineDetection:
 
 @dataclass(frozen=True)
 class TextDetection:
+    """A recognized string, after lexicon-constrained decoding against the
+    Convention Profile's tag grammar. `string` is the corrected tag when a
+    correction was applied; an unresolved detection keeps the raw candidate
+    verbatim and is flagged, never guessed (fail-closed, ticket 06)."""
     id: str
     sheet: int
     string: str
@@ -133,6 +137,14 @@ class TextDetection:
     bbox: Bbox
     confidence: float
     provenance: Provenance
+    raw_string: str | None = None    # the candidate as read, when decoding
+                                     # touched it (corrected or unresolved)
+    correction: str | None = None    # swaps applied, e.g. "O->0 at index 3"
+    resolved: bool = False           # set True only by the lexicon decoder;
+                                     # a detection is born unverified, and an
+                                     # unresolved one never names a plant item
+    candidates: tuple[str, ...] = () # grammar-valid near-matches when the
+                                     # correction was ambiguous
 
 
 @dataclass(frozen=True)

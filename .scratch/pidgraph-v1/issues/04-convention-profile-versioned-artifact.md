@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (Walking skeleton).
 
-**Status:** done
+**Status:** resolved
 
 - [x] A Convention Profile is authored as an on-disk bundle holding the three parts: Legend Dictionary, tag grammar, and line-type semantics.
 - [x] Loading validates the bundle and reports clear errors for a malformed or incomplete profile — a bad profile fails at load, never mid-run.

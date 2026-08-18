@@ -82,6 +82,8 @@ def _rel(edge: dict) -> tuple[str, dict]:
         return "FLOWS_TO", props | {
             "direction_sources": attrs["direction_sources"]}
     props["direction"] = direction  # "unknown" (or "conflict")
+    if attrs.get("direction_conflicts"):
+        props["direction_conflicts"] = attrs["direction_conflicts"]
     if attrs.get("direction_note"):
         props["direction_note"] = attrs["direction_note"]
     return "CONNECTED_TO", props

@@ -83,11 +83,18 @@ def _render(width: int, height: int, annotations: SheetAnnotations) -> bytes:
     return bytes(grid)
 
 
-def build_synthetic_sheet(number: int = 1) -> Sheet:
-    annotations = SheetAnnotations(symbols=SYMBOLS, lines=LINES, texts=TEXTS)
-    return Sheet(number=number, width=SHEET_W, height=SHEET_H,
-                 raster=_render(SHEET_W, SHEET_H, annotations),
+def build_sheet(number: int, annotations: SheetAnnotations,
+                width: int = SHEET_W, height: int = SHEET_H) -> Sheet:
+    """A rendered synthetic Sheet from arbitrary annotations — for tests
+    that need a topology the shared fixture Sheet does not draw."""
+    return Sheet(number=number, width=width, height=height,
+                 raster=_render(width, height, annotations),
                  annotations=annotations)
+
+
+def build_synthetic_sheet(number: int = 1) -> Sheet:
+    return build_sheet(
+        number, SheetAnnotations(symbols=SYMBOLS, lines=LINES, texts=TEXTS))
 
 
 @pytest.fixture

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .cypher_store import CypherScriptGraphStore
+from .lexicon import CONFUSION_PAIRS
 from .model import (
     ConventionProfile,
     Provenance,
@@ -74,30 +75,42 @@ class StubSymbolDetector:
         ]
 
 
+# The classic letter/digit OCR flips, seeded deterministically into every
+# stub read so the lexicon decoder's corrections are proven end to end.
+# Derived from the decoder's own confusion set — one source of truth, so
+# the stub can never emit noise the decoder no longer repairs.
+_OCR_NOISE = str.maketrans({digit: letter
+                            for letter, digit in CONFUSION_PAIRS})
+
+
 class StubTextRecognizer:
     """Deterministic offline default: reads the tag strings a synthetic
-    Sheet is annotated with, at full confidence."""
+    Sheet is annotated with, degraded by seeded OCR noise (0 read as O,
+    5 read as S) the way a real engine smudges glyphs."""
 
     COMPONENT = "text_recognizer:stub"
 
     def recognize(self, sheet: Sheet,
                   profile: ConventionProfile) -> list[TextDetection]:
         annotations = _require_annotations(sheet, self.COMPONENT)
-        return [
-            TextDetection(
+        detections = []
+        for i, text in enumerate(annotations.texts):
+            noisy = text.string.translate(_OCR_NOISE)
+            evidence = (f"synthetic annotation {text.text_class}"
+                        f" at bbox {text.bbox}")
+            if noisy != text.string:
+                evidence += f", read with seeded OCR noise as {noisy!r}"
+            detections.append(TextDetection(
                 id=f"p{sheet.number}-text{i}",
                 sheet=sheet.number,
-                string=text.string,
+                string=noisy,
                 text_class=text.text_class,
                 bbox=text.bbox,
                 confidence=1.0,
-                provenance=Provenance(
-                    component=self.COMPONENT,
-                    evidence=f"synthetic annotation {text.text_class}"
-                             f" at bbox {text.bbox}"),
-            )
-            for i, text in enumerate(annotations.texts)
-        ]
+                provenance=Provenance(component=self.COMPONENT,
+                                      evidence=evidence),
+            ))
+        return detections
 
 
 SYMBOL_DETECTORS = {"stub": StubSymbolDetector}

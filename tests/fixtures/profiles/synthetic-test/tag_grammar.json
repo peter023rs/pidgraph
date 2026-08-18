@@ -2,5 +2,6 @@
  "equipment_tag": "[A-Z]-\\d{3}",
  "instrument_tag": "[A-Z]{2}-\\d{3}",
  "line_number": "\\d{2,3}-[A-Z]{2}-\\d{3}",
- "opc_label": "[A-Z]{2}\\d{2}-\\d{4}"
+ "opc_label": "[A-Z]{2}\\d{2}-\\d{4}",
+ "opc_direction": "(?:FROM|TO) [A-Z]{2}\\d{2}-\\d{4}"
 }
