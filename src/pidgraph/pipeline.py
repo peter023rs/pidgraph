@@ -32,6 +32,7 @@ from .normalize import (
     map_detections_to_original,
     normalize_sheet,
 )
+from .pngio import encode_gray_png
 from .seams import (
     PipelineConfig,
     SymbolDetector,
@@ -113,10 +114,12 @@ def detections_from_record(record: dict) -> tuple[
 
 def write_run_outputs(out_dir: Path, plant_model: dict,
                       records: Sequence[dict],
-                      store_summary: dict) -> dict[str, str]:
-    """Write the file outputs a run leaves behind — the DEXPI plant model
-    and the per-Sheet detection records — returning their paths (plus the
-    store's, when it wrote one)."""
+                      store_summary: dict,
+                      sheets: Sequence[Sheet]) -> dict[str, str]:
+    """Write the file outputs a run leaves behind — the DEXPI plant model,
+    the per-Sheet detection records, and each Sheet's original raster (the
+    Review Workbench overlays detections on it and reads run artifacts
+    only) — returning their paths (plus the store's, when it wrote one)."""
     paths: dict[str, str] = {}
     model_path = out_dir / "plant_model_dexpi.json"
     model_path.write_text(
@@ -131,6 +134,15 @@ def write_run_outputs(out_dir: Path, plant_model: dict,
             json.dumps(record, ensure_ascii=False, indent=1),
             encoding="utf-8")
         paths[f"detections/sheet_{record['sheet']}"] = str(record_path)
+    sheets_dir = out_dir / "sheets"
+    for sheet in sheets:
+        if sheet.raster is None:
+            continue
+        sheets_dir.mkdir(parents=True, exist_ok=True)
+        png_path = sheets_dir / f"sheet_{sheet.number}.png"
+        png_path.write_bytes(
+            encode_gray_png(sheet.width, sheet.height, sheet.raster))
+        paths[f"sheets/sheet_{sheet.number}"] = str(png_path)
     if store_summary.get("path"):
         paths["plant_graph"] = store_summary["path"]
     return paths
@@ -160,7 +172,7 @@ def digitize(document: Document,
     paths: dict[str, str] = {}
     if out_dir is not None:
         paths = write_run_outputs(out_dir, plant_model, records,
-                                  store_summary)
+                                  store_summary, document.sheets)
 
     return RunArtifacts(
         detection_records=tuple(records),

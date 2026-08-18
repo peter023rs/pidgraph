@@ -129,4 +129,44 @@ def test_run_artifacts_are_inspectable_on_disk(tmp_path, synthetic_document,
     assert "FLOWS_TO" in (tmp_path / "plant_graph.cypher").read_text(
         encoding="utf-8")
     assert set(artifacts.paths) == {"plant_model", "detections/sheet_1",
-                                    "plant_graph"}
+                                    "plant_graph", "sheets/sheet_1"}
+
+
+def test_run_persists_each_sheets_original_raster_as_png(
+        tmp_path, synthetic_document, synthetic_profile):
+    """The Review Workbench (ticket 10) reads run artifacts only, so the
+    run itself must leave the original raster behind for the overlay."""
+    import struct
+    import zlib
+
+    artifacts = digitize(synthetic_document, synthetic_profile,
+                         out_dir=tmp_path)
+
+    png_path = tmp_path / "sheets" / "sheet_1.png"
+    assert artifacts.paths["sheets/sheet_1"] == str(png_path)
+    data = png_path.read_bytes()
+
+    # Decoded independently of the encoder, straight from the PNG spec:
+    # signature, IHDR fields at fixed offsets, then the IDAT stream with
+    # one filter byte (0 = None) ahead of each pixel row.
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", data[16:24])
+    bit_depth, color_type = data[24], data[25]
+    sheet = synthetic_document.sheets[0]
+    assert (width, height) == (sheet.width, sheet.height)
+    assert (bit_depth, color_type) == (8, 0)  # 8-bit grayscale
+
+    idat = b""
+    offset = 8
+    while offset < len(data):
+        (length,) = struct.unpack(">I", data[offset:offset + 4])
+        tag = data[offset + 4:offset + 8]
+        if tag == b"IDAT":
+            idat += data[offset + 8:offset + 8 + length]
+        offset += 12 + length
+    raw = zlib.decompress(idat)
+    rows = [raw[y * (width + 1):(y + 1) * (width + 1)]
+            for y in range(height)]
+    assert all(row[0] == 0 for row in rows)  # filter None on every row
+    pixels = b"".join(row[1:] for row in rows)
+    assert pixels == sheet.raster

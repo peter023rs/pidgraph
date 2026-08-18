@@ -3,7 +3,8 @@ selected by configuration (hazop-ai's proven seam pattern):
 
   SymbolDetector  — stub today, trained detector later (ticket 16)
   TextRecognizer  — stub today, the chosen OCR engine later (ticket 18)
-  GraphStore      — Cypher-script emission today, live Neo4j later (ticket 09)
+  GraphStore      — Cypher-script emission by default; a live local Neo4j
+                    loader is the configured alternative (ticket 09)
 
 The stubs read the ground-truth annotations a synthetic Sheet carries; real
 implementations read the raster. Both live behind the same interface, so the
@@ -18,6 +19,7 @@ from typing import Protocol
 
 from .cypher_store import CypherScriptGraphStore
 from .lexicon import CONFUSION_PAIRS
+from .neo4j_store import Neo4jGraphStore
 from .model import (
     ConventionProfile,
     Provenance,
@@ -115,7 +117,8 @@ class StubTextRecognizer:
 
 SYMBOL_DETECTORS = {"stub": StubSymbolDetector}
 TEXT_RECOGNIZERS = {"stub": StubTextRecognizer}
-GRAPH_STORES = {"cypher-script": CypherScriptGraphStore}
+GRAPH_STORES = {"cypher-script": CypherScriptGraphStore,
+                "neo4j": Neo4jGraphStore}
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,11 @@ external artifact — mirroring hazop-ai's offline to_cypher prior art."""
 
 import pytest
 
-from pidgraph.cypher_store import CypherScriptGraphStore, to_cypher
+from pidgraph.cypher_store import (
+    CypherScriptGraphStore,
+    to_cypher,
+    to_cypher_statements,
+)
 
 
 def _graph():
@@ -60,6 +64,29 @@ def test_no_flows_to_without_an_evidence_source():
 
     with pytest.raises(ValueError, match="direction_sources"):
         to_cypher(graph)
+
+
+def test_loading_the_same_run_twice_is_idempotent_at_the_cypher_level():
+    """Ticket 09: loading the same run twice is safe. The constraint is
+    IF NOT EXISTS and every other statement MERGEs on the unique tag —
+    a second execution matches what the first created and adds nothing."""
+    statements = to_cypher_statements(_graph())
+
+    assert statements[0].startswith("CREATE CONSTRAINT")
+    assert "IF NOT EXISTS" in statements[0]
+    for statement in statements[1:]:
+        assert "MERGE" in statement
+        assert "CREATE" not in statement
+
+
+def test_script_is_exactly_the_statement_list():
+    """The offline script and the live loader (ticket 09) share one
+    statement source — asserting schema conformance on the emitted script
+    covers live loads too."""
+    statements = to_cypher_statements(_graph())
+
+    assert [line for line in to_cypher(_graph()).splitlines()
+            if not line.startswith("//")] == [s + ";" for s in statements]
 
 
 def test_store_writes_inspectable_script(tmp_path):

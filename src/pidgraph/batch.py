@@ -253,7 +253,9 @@ def run_batch(document: Document,
     plant_model = emit_plant_model(assemblies, document, profile)
     store_summary = store.store(plant_graph, run_dir)
     paths = write_run_outputs(run_dir, plant_model, ordered_records,
-                              store_summary)
+                              store_summary,
+                              [sheet for sheet in document.sheets
+                               if sheet.number in records])
 
     counts = {"succeeded": 0, "failed": 0, "skipped-by-resume": 0}
     for outcome in outcomes:
