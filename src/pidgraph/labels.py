@@ -12,7 +12,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 from urllib.parse import quote
 
 VERDICTS = ("pass", "reject", "edit")
@@ -129,12 +129,29 @@ class LabelStore:
 
     def record(self, profile: Mapping[str, str], sheet: int,
                example: dict) -> dict:
-        labels = self.sheet_labels(profile, sheet)
-        labels["examples"][example["detection"]["id"]] = example
+        self.record_many(profile, sheet, [example])
+        return example
+
+    def record_many(self, profile: Mapping[str, str], sheet: int,
+                    examples: Iterable[dict],
+                    replace: bool = False) -> int:
+        """All of one Sheet's new examples in a single write — the label
+        factory (ticket 13) records hundreds per Sheet, where one
+        write-then-replace each would rewrite the growing store
+        quadratically. replace=True starts the Sheet over instead of
+        merging, so a regenerated ground-truth Sheet carries no stale
+        examples."""
+        labels: dict = ({"profile": dict(profile), "sheet": sheet,
+                         "examples": {}} if replace
+                        else self.sheet_labels(profile, sheet))
+        count = 0
+        for example in examples:
+            labels["examples"][example["detection"]["id"]] = example
+            count += 1
         path = self._sheet_path(profile, sheet)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(labels, ensure_ascii=False, indent=1),
                        encoding="utf-8")
         os.replace(tmp, path)
-        return example
+        return count

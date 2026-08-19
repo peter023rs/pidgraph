@@ -78,11 +78,24 @@ def _vector_page(page_obj: int) -> tuple[bytes, list[bytes]]:
     return page, [contents]
 
 
+def _vector_ops_page(width: int, height: int, ops: bytes,
+                     page_obj: int) -> tuple[bytes, list[bytes]]:
+    """A vector page drawing caller-chosen content-stream operators —
+    for tests that need exactly known geometry (the label factory's
+    projection fidelity, ticket 13)."""
+    contents_obj = page_obj + 1
+    page = (f"<</Type/Page/Parent 2 0 R/MediaBox[0 0 {width} {height}]"
+            f"/Resources<</Font<</F1 3 0 R>>>>"
+            f"/Contents {contents_obj} 0 R>>").encode()
+    return page, [_stream("", ops)]
+
+
 def build_pdf(pages: list[tuple]) -> bytes:
     """Page specs:
       ("scanned", width, height, raster)                 gray Flate image
       ("raw_image", width, height, encoded, "/Filter")   undecodable image
       ("vector",)                                        paths + text
+      ("vector_ops", width, height, ops)                 caller-drawn page
       ("blank",)                                         no marks at all
     """
     # 1 catalog, 2 pages (Kids filled in below), 3 font, then per page
@@ -105,6 +118,9 @@ def build_pdf(pages: list[tuple]) -> bytes:
                                       page_obj)
         elif spec[0] == "blank":
             page, extra = _blank_page(page_obj)
+        elif spec[0] == "vector_ops":
+            _, width, height, ops = spec
+            page, extra = _vector_ops_page(width, height, ops, page_obj)
         else:
             page, extra = _vector_page(page_obj)
         objects.append(page)
