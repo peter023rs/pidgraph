@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import quote
@@ -100,6 +101,24 @@ class LabelStore:
 
     def _sheet_path(self, profile: Mapping[str, str], sheet: int) -> Path:
         return self.root / profile_key(profile) / f"sheet_{sheet}.json"
+
+    def profiles(self) -> list[str]:
+        """The store's partitions — quoted name@version directory keys."""
+        if not self.root.is_dir():
+            return []
+        return sorted(p.name for p in self.root.iterdir() if p.is_dir())
+
+    def sheets(self, profile: Mapping[str, str]) -> list[int]:
+        """Sheet numbers the profile holds labeled examples for. The
+        store owns its on-disk layout: stray files beside the sheet
+        stores (editor leftovers, interrupted .tmp writes) are not
+        sheets."""
+        pattern = re.compile(r"sheet_(\d+)\.json")
+        directory = self.root / profile_key(profile)
+        return sorted(
+            int(match.group(1))
+            for path in directory.glob("sheet_*.json")
+            if (match := pattern.fullmatch(path.name)))
 
     def sheet_labels(self, profile: Mapping[str, str], sheet: int) -> dict:
         path = self._sheet_path(profile, sheet)

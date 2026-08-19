@@ -5,6 +5,14 @@ correction). Every verdict persists as a labeled example keyed to
 Convention Profile and Sheet, so reviewing is simultaneously
 training-data creation.
 
+Review flow (ticket 11): a reviewer's minutes go to the elements most
+likely to be wrong, so each Sheet's undecided detections queue lowest
+confidence first — scoped per Sheet and, on request, per detection kind —
+and giving a verdict advances the queue. The Document-level index shows
+each Sheet's review state (untouched, in progress, reviewed), derived on
+every request from the persisted verdicts, so a 400-Sheet review splits
+across days and restarts without losing its place.
+
 The Workbench reads run artifacts only — detections/sheet_N.json and
 sheets/sheet_N.png — and has no path to invoke extraction: nothing from
 the engine (pipeline, seams, batch) is imported here.
@@ -14,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from html import escape
 from pathlib import Path
 
@@ -23,12 +32,23 @@ from .labels import LabelStore, make_example
 
 _INDEX_HTML = """<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Review Workbench</title></head>
+<head>
+<meta charset="utf-8"><title>Review Workbench</title>
+<style>
+  body { font-family: sans-serif; margin: 1rem; }
+  [data-state="reviewed"] { color: #282; }
+  [data-state="in progress"] { color: #a60; }
+  [data-state="unreadable"] { color: #c00; }
+  [data-state] a { color: inherit; }
+</style>
+</head>
 <body>
 <h1>Review Workbench</h1>
 <ul>
-{% for number in numbers %}
-  <li><a href="/sheet/{{ number }}">Sheet {{ number }}</a></li>
+{% for row in sheets %}
+  <li data-state="{{ row.state }}"><a href="/sheet/{{ row.sheet }}">Sheet
+ {{ row.sheet }}</a> — {{ row.state }},
+ {{ row.decided }}/{{ row.total }} reviewed</li>
 {% endfor %}
 </ul>
 </body>
@@ -66,6 +86,18 @@ _SHEET_HTML = """<!doctype html>
   <span id="selection">click a detection</span>
   <span id="status"></span>
 </div>
+<div class="panel">
+  <label>queue scope
+    <select id="scope">
+      <option value="">all kinds</option>
+      <option value="symbol">symbols</option>
+      <option value="line">lines</option>
+      <option value="text">texts</option>
+    </select>
+  </label>
+  <button id="next">Next in queue</button>
+  <span id="queue-status"></span>
+</div>
 <div class="stage">
   <img src="/sheet/{{ number }}/raster.png"
        alt="Sheet {{ number }} original raster">
@@ -73,19 +105,62 @@ _SHEET_HTML = """<!doctype html>
 </div>
 <script>
 const VERDICTS_URL = "/sheet/{{ number }}/verdicts";
+const QUEUE_URL = "/sheet/{{ number }}/queue";
 const buttons = document.querySelectorAll("button[data-action]");
 const info = document.getElementById("selection");
 const status = document.getElementById("status");
+const scope = document.getElementById("scope");
+const queueStatus = document.getElementById("queue-status");
 let selected = null;
+let advanceToken = 0;
+
+function select(el) {
+  if (selected) selected.classList.remove("selected");
+  selected = el;
+  if (!el) {
+    info.textContent = "click a detection";
+    buttons.forEach((b) => { b.disabled = true; });
+    return;
+  }
+  el.classList.add("selected");
+  el.scrollIntoView({block: "nearest", inline: "nearest"});
+  info.textContent = el.querySelector("title").textContent;
+  buttons.forEach((b) => { b.disabled = false; });
+}
+
+async function advance() {
+  const token = ++advanceToken;
+  const url = scope.value
+    ? QUEUE_URL + "?kind=" + scope.value : QUEUE_URL;
+  let data;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    data = await response.json();
+  } catch (error) {
+    if (token === advanceToken) {
+      queueStatus.textContent = "queue unavailable";
+    }
+    return;
+  }
+  if (token !== advanceToken) return;  // superseded by a newer advance
+  queueStatus.textContent =
+    data.remaining + " of " + data.total + " awaiting review";
+  if (!data.queue.length) {
+    select(null);
+    info.textContent = "queue empty — scope reviewed";
+    return;
+  }
+  select(document.querySelector(
+    '[data-id="' + CSS.escape(data.queue[0].id) + '"]'));
+}
+
+document.getElementById("next").addEventListener("click", advance);
+scope.addEventListener("change", advance);
 
 document.querySelector(".stage svg").addEventListener("click", (event) => {
   const el = event.target.closest("[data-id]");
-  if (!el) return;
-  if (selected) selected.classList.remove("selected");
-  selected = el;
-  el.classList.add("selected");
-  info.textContent = el.querySelector("title").textContent;
-  buttons.forEach((b) => { b.disabled = false; });
+  if (el) select(el);
 });
 
 function promptCorrection(el) {
@@ -105,10 +180,12 @@ function promptCorrection(el) {
 
 async function give(action) {
   if (!selected) return;
-  const payload = {detection_id: selected.getAttribute("data-id"),
+  const el = selected;  // the save targets this element, even if the
+                        // reviewer clicks elsewhere while it is in flight
+  const payload = {detection_id: el.getAttribute("data-id"),
                    verdict: action};
   if (action === "edit") {
-    const correction = promptCorrection(selected);
+    const correction = promptCorrection(el);
     if (!correction) return;
     payload.correction = correction;
   }
@@ -119,8 +196,11 @@ async function give(action) {
     body: JSON.stringify(payload),
   });
   if (response.ok) {
-    selected.setAttribute("data-verdict", action);
+    el.setAttribute("data-verdict", action);
     status.textContent = "saved";
+    if (selected === el) {
+      await advance();  // the verdict decided it: the queue moves on
+    }
   } else {
     status.textContent = "refused: " + await response.text();
   }
@@ -128,6 +208,10 @@ async function give(action) {
 
 buttons.forEach((b) => b.addEventListener(
   "click", () => give(b.getAttribute("data-action"))));
+
+// the queue greets the reviewer: status and lowest-confidence-first
+// selection are presented on load, not after a first click
+advance();
 </script>
 </body>
 </html>
@@ -196,13 +280,52 @@ def _sheet_record(run_dir: Path, number: int) -> dict | None:
 _KINDS = (("symbol", "symbols"), ("line", "lines"), ("text", "texts"))
 
 
-def _find_detection(record: dict,
-                    detection_id: object) -> tuple[str, dict] | None:
+def _iter_detections(record: dict) -> Iterator[tuple[str, dict]]:
     for kind, field in _KINDS:
         for detection in record[field]:
-            if detection["id"] == detection_id:
-                return kind, detection
+            yield kind, detection
+
+
+def _find_detection(record: dict,
+                    detection_id: object) -> tuple[str, dict] | None:
+    for kind, detection in _iter_detections(record):
+        if detection["id"] == detection_id:
+            return kind, detection
     return None
+
+
+def _queue_payload(sheet: int, record: dict, examples: dict,
+                   kind: str | None) -> dict:
+    """The Sheet's undecided detections, lowest confidence first, so
+    reviewer minutes go to the elements most likely to be wrong. Ties
+    keep record order (the sort is stable), so the queue is deterministic
+    across requests and restarts."""
+    scoped = [(k, d) for k, d in _iter_detections(record)
+              if kind is None or k == kind]
+    pending = [{"id": d["id"], "kind": k, "confidence": d["confidence"]}
+               for k, d in scoped if d["id"] not in examples]
+    pending.sort(key=lambda entry: entry["confidence"])
+    return {"sheet": sheet, "kind": kind,
+            "total": len(scoped), "remaining": len(pending),
+            "queue": pending}
+
+
+def _review_state(sheet: int, ids: frozenset[str],
+                  examples: dict) -> dict:
+    """One Sheet's review state from verdict coverage. Only verdicts on
+    detections this Sheet actually contains count — labels persisted
+    against another run's artifacts never inflate coverage. A Sheet with
+    nothing detected needs no reviewer minutes, so it counts as
+    reviewed."""
+    decided = len(ids & examples.keys())
+    if decided == len(ids):
+        state = "reviewed"
+    elif decided == 0:
+        state = "untouched"
+    else:
+        state = "in progress"
+    return {"sheet": sheet, "state": state,
+            "decided": decided, "total": len(ids)}
 
 
 def _sheet_numbers(run_dir: Path) -> list[int]:
@@ -232,19 +355,82 @@ def create_app(run_dir: Path | str,
             abort(404, f"no run artifacts for Sheet {number}")
         return record
 
+    # A Sheet's identity is the number its artifact file is served
+    # under — the same number in the URL — so labels, queue and progress
+    # all key one way even if a record's internal "sheet" field disagrees
+    # with its filename.
+    def load_examples(record: dict, number: int) -> dict:
+        return store.sheet_labels(record["profile"], number)["examples"]
+
+    # Detection records never change while a run is under review, so the
+    # Document-level view caches each record's profile and detection ids
+    # against the file's stat instead of re-parsing full geometry on
+    # every request of a 400-Sheet index. Labels are never cached:
+    # review state is recomputed from the persisted verdicts on every
+    # request, never from session memory.
+    summaries: dict[int, tuple[tuple[int, int], tuple[dict, frozenset]]]
+    summaries = {}
+
+    def record_summary(number: int) -> tuple[dict, frozenset] | None:
+        path = run_dir / "detections" / f"sheet_{number}.json"
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        key = (stat.st_mtime_ns, stat.st_size)
+        cached = summaries.get(number)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        record = json.loads(path.read_text(encoding="utf-8"))
+        summary = (record["profile"],
+                   frozenset(d["id"]
+                             for _, d in _iter_detections(record)))
+        summaries[number] = (key, summary)
+        return summary
+
+    def review_states() -> list[dict]:
+        rows = []
+        for number in _sheet_numbers(run_dir):
+            try:
+                summary = record_summary(number)
+            except ValueError:
+                # a run killed mid-write leaves a truncated record; one
+                # bad Sheet must not take down the whole Document's view
+                rows.append({"sheet": number, "state": "unreadable",
+                             "decided": 0, "total": 0})
+                continue
+            if summary is None:
+                continue
+            profile, ids = summary
+            examples = store.sheet_labels(profile, number)["examples"]
+            rows.append(_review_state(number, ids, examples))
+        return rows
+
     @app.get("/")
     def index():
-        return render_template_string(
-            _INDEX_HTML, numbers=_sheet_numbers(run_dir))
+        return render_template_string(_INDEX_HTML,
+                                      sheets=review_states())
+
+    @app.get("/progress")
+    def progress():
+        return {"sheets": review_states()}
+
+    @app.get("/sheet/<int:number>/queue")
+    def sheet_queue(number: int):
+        record = load_record(number)
+        kind = request.args.get("kind")
+        if kind is not None and kind not in dict(_KINDS):
+            return (f"kind must be one of {sorted(dict(_KINDS))},"
+                    f" got {kind!r}", 400)
+        return _queue_payload(number, record,
+                              load_examples(record, number), kind)
 
     @app.get("/sheet/<int:number>")
     def sheet_html(number: int):
         record = load_record(number)
-        examples = store.sheet_labels(record["profile"],
-                                      number)["examples"]
         return render_template_string(
             _SHEET_HTML, number=number,
-            overlay=_overlay_svg(record, examples))
+            overlay=_overlay_svg(record, load_examples(record, number)))
 
     @app.get("/sheet/<int:number>/raster.png")
     def sheet_raster(number: int):
