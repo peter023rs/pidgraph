@@ -15,6 +15,7 @@ import pytest
 
 pytest.importorskip("pymupdf")
 
+from pidgraph.degrade import Skew, Variant
 from pidgraph.label_factory import run_label_factory
 from pidgraph.labels import profile_key
 from pdf_fixtures import write_pdf
@@ -174,3 +175,49 @@ def test_text_span_projects_onto_its_rendered_glyphs(factory_run):
     assert all(box[0] - pad <= x <= box[2] + pad
                and box[1] - pad <= y <= box[3] + pad
                for x, y in ink)
+
+
+def test_degraded_variant_box_surrounds_the_skewed_ink(tmp_path):
+    """The ticket-14 alignment criterion end to end: real rendered ink,
+    skewed by the factory's degradation, still falls inside the label
+    box the same variant emitted."""
+    pdf = write_pdf(tmp_path / "synthetic.pdf",
+                    [("vector_ops", PAGE_W, PAGE_H, OPS)])
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "topology_page1.json").write_text(
+        json.dumps(ARTIFACT), encoding="utf-8")
+    out = tmp_path / "out"
+    report = run_label_factory(
+        artifact_dir, pdf, out, profile=PROFILE, dpi=DPI,
+        progress=lambda outcome: None,
+        variants=[Variant("skewed", (Skew(angle_deg=3.0),), seed=1)])
+    assert report["coverage"]["failed"] == 0
+
+    width, _, raster = decode_gray_png(
+        (out / "variants" / "skewed" / "sheets" / "sheet_1.png")
+        .read_bytes())
+    labels = json.loads(
+        (out / "variants" / "skewed" / "labels" / profile_key(PROFILE)
+         / "sheet_1.json").read_text(encoding="utf-8"))
+    box = labels["examples"]["p1-node1"]["detection"]["bbox"]
+    clean_box = [v * SCALE for v in BBOX]
+    assert box != clean_box  # the label genuinely moved with the skew
+
+    pad = 2.5  # antialiasing plus bilinear resampling bleed
+
+    def surrounds(box, what):
+        window = (box[0] - 15, box[1] - 15, box[2] + 15, box[3] + 15)
+        ink = ink_pixels(raster, width, window)
+        assert ink, f"the skewed {what} left no ink where projected"
+        assert all(box[0] - pad <= x <= box[2] + pad
+                   and box[1] - pad <= y <= box[3] + pad
+                   for x, y in ink), f"skewed {what} ink escaped its box"
+
+    surrounds(box, "symbol")
+    # text-span geometry rides the same map: the tag box too
+    texts = [example["detection"]
+             for example in labels["examples"].values()
+             if example["kind"] == "text"]
+    assert [t["string"] for t in texts] == ["T-101"]
+    surrounds(texts[0]["bbox"], "tag")

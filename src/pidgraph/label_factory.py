@@ -23,6 +23,14 @@ already consumes: symbol/text/line examples as pass verdicts in the
 labels.LabelStore schema (exported per profile as a training set,
 ticket 12), and terminal-level connectivity per Sheet for the eval
 harness's connectivity gate (ticket 15).
+
+Synthetic degradation (ticket 14): the batch can additionally emit
+degraded variants of every Sheet beside the clean set — one
+self-contained dataset directory per Variant under out_dir/variants/
+<name> (sheets, labels, connectivity, training), for train/eval splits
+that survive real scans. Label geometry is pushed through the variant's
+own point map (see degrade.py), and each variant reproduces exactly
+from its transform configuration and seed.
 """
 
 from __future__ import annotations
@@ -33,8 +41,20 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
+from .degrade import (
+    Raster,
+    Transform,
+    Variant,
+    clip_bbox,
+    degrade_bbox,
+    degrade_polyline,
+    degrade_raster,
+    load_variants,
+    polyline_visible,
+    transform_config,
+)
 from .labels import LabelStore, make_example, profile_key
 from .pngio import encode_gray_png
 from .training import export_training_set
@@ -575,6 +595,45 @@ def _discovered(artifact_dir: Path) -> list[Path]:
     return paths
 
 
+def _degraded_labels(labels: SheetLabels, transforms: Sequence[Transform],
+                     width: int, height: int) -> SheetLabels:
+    """A degraded variant's ground truth: geometry pushed through the
+    variant's own point map — exactly the one its raster was resampled
+    through — with ids, classes, and strings unchanged. The transforms
+    preserve the canvas, so geometry they push off the page lost its
+    ink to the paper fill: such labels drop rather than assert invisible
+    ink, links referencing a vanished symbol drop with it, and a
+    partially visible box clips to the canvas."""
+    def moved_box(detection: dict) -> dict | None:
+        bbox = clip_bbox(degrade_bbox(transforms, detection["bbox"],
+                                      width, height), width, height)
+        return None if bbox is None else {**detection, "bbox": bbox}
+
+    symbols, vanished = [], set()
+    for symbol in labels.symbols:
+        moved = moved_box(symbol)
+        if moved is None:
+            vanished.add(symbol["id"])
+        else:
+            symbols.append(moved)
+    lines = []
+    for line in labels.lines:
+        polyline = degrade_polyline(transforms, line["polyline"],
+                                    width, height)
+        if polyline_visible(polyline, width, height):
+            lines.append({**line, "polyline": polyline})
+    return SheetLabels(
+        sheet=labels.sheet,
+        symbols=symbols,
+        texts=[text for text in map(moved_box, labels.texts)
+               if text is not None],
+        lines=lines,
+        links=[link for link in labels.links
+               if link["source"] not in vanished
+               and link["target"] not in vanished],
+    )
+
+
 def _examples(labels: SheetLabels) -> list[dict]:
     """Every projected label as a pass verdict — ground truth in exactly
     the labeled-example schema reviewing produces (ticket 10) and the
@@ -591,6 +650,8 @@ def _process_artifact(path: Path, pdf_path: Path, out_dir: Path,
                       profile: Mapping[str, str], dpi: int,
                       synthesis: BoxSynthesis | None,
                       reader: PageReader, store: LabelStore,
+                      variants: Sequence[Variant],
+                      variant_stores: Mapping[str, LabelStore],
                       seen: dict[int, str]) -> dict:
     artifact = json.loads(path.read_text(encoding="utf-8"))
     validate_artifact(artifact, path.name)
@@ -603,15 +664,52 @@ def _process_artifact(path: Path, pdf_path: Path, out_dir: Path,
     labels = build_sheet_labels(artifact, list(render.spans), scale,
                                 synthesis, source=path.name)
 
+    # every fallible computation happens before anything is written,
+    # and the label stores are recorded last, after every file write:
+    # a Sheet that fails mid-artifact must not surface in one dataset's
+    # training export but not another's — the clean and degraded splits
+    # cover the same Sheets or the artifact reports failed
+    prepared = []
+    for variant in variants:
+        degraded = degrade_raster(
+            Raster(render.width, render.height, render.pixels),
+            variant.transforms, f"{variant.seed}/sheet{sheet}")
+        prepared.append((variant, degraded,
+                         _degraded_labels(labels, variant.transforms,
+                                          render.width, render.height)))
+
     png_path = out_dir / "sheets" / f"sheet_{sheet}.png"
     png_path.parent.mkdir(parents=True, exist_ok=True)
     png_path.write_bytes(encode_gray_png(render.width, render.height,
                                          render.pixels))
-    store.record_many(profile, sheet, _examples(labels), replace=True)
     connectivity_path = out_dir / "connectivity" / f"sheet_{sheet}.json"
     _write_json(connectivity_path, {"profile": dict(profile),
                                     "sheet": sheet,
                                     "links": labels.links})
+
+    variant_paths: dict[str, dict] = {}
+    for variant, degraded, degraded_labels in prepared:
+        root = out_dir / "variants" / variant.name
+        degraded_png = root / "sheets" / f"sheet_{sheet}.png"
+        degraded_png.parent.mkdir(parents=True, exist_ok=True)
+        degraded_png.write_bytes(encode_gray_png(
+            degraded.width, degraded.height, degraded.pixels))
+        variant_connectivity = root / "connectivity" / f"sheet_{sheet}.json"
+        _write_json(variant_connectivity, {"profile": dict(profile),
+                                           "sheet": sheet,
+                                           "links": degraded_labels.links})
+        variant_paths[variant.name] = {
+            "sheet_png": str(degraded_png),
+            "labels": str(root / "labels" / profile_key(profile)
+                          / f"sheet_{sheet}.json"),
+            "connectivity": str(variant_connectivity),
+        }
+
+    store.record_many(profile, sheet, _examples(labels), replace=True)
+    for variant, _, degraded_labels in prepared:
+        variant_stores[variant.name].record_many(
+            profile, sheet, _examples(degraded_labels), replace=True)
+
     seen[sheet] = path.name
     return {
         "artifact": path.name,
@@ -630,6 +728,7 @@ def _process_artifact(path: Path, pdf_path: Path, out_dir: Path,
             "labels": str(out_dir / "labels" / profile_key(profile)
                           / f"sheet_{sheet}.json"),
             "connectivity": str(connectivity_path),
+            **({"variants": variant_paths} if variant_paths else {}),
         },
     }
 
@@ -641,17 +740,38 @@ def run_label_factory(artifact_dir: Path | str, pdf_path: Path | str,
                       synthesis: BoxSynthesis | None = None,
                       reader: PageReader | None = None,
                       progress: Callable[[dict], None] | None = None,
+                      variants: Sequence[Variant] | None = None,
                       ) -> dict:
     """Batch-process an artifact directory: render each Sheet, project
     its ground truth, and export the training set — reporting per-
     artifact success or failure without stopping the batch, so coverage
-    is stated, never implied. Re-running against the same out_dir
-    regenerates every Sheet it reproduces in place."""
+    is stated, never implied. Each degradation variant additionally
+    gets its own complete dataset directory under out_dir/variants/
+    <name>, side by side with the clean set. Re-running against the
+    same out_dir regenerates every Sheet it reproduces in place and
+    deletes nothing: a variant dropped from the configuration keeps its
+    directory from the earlier run — the manifest describes the latest
+    run alone, so consult it, not the directory listing, for what a run
+    produced."""
     artifact_dir, pdf_path = Path(artifact_dir), Path(pdf_path)
     out_dir = Path(out_dir)
     profile = dict(profile) if profile is not None else dict(DEFAULT_PROFILE)
     reader = reader if reader is not None else read_page
     report_progress = progress if progress is not None else _print_progress
+    variants = tuple(variants) if variants is not None else ()
+    # names become directories, so a case-insensitive filesystem would
+    # silently alias 'scan' and 'Scan' onto one dataset
+    lowered = [variant.name.casefold() for variant in variants]
+    colliding = sorted({variant.name for variant, low
+                        in zip(variants, lowered)
+                        if lowered.count(low) > 1})
+    if colliding:
+        raise ValueError(f"variant names must be unique, ignoring case;"
+                         f" {colliding} collide")
+    variant_stores = {
+        variant.name: LabelStore(out_dir / "variants" / variant.name
+                                 / "labels")
+        for variant in variants}
 
     store = LabelStore(out_dir / "labels")
     seen: dict[int, str] = {}
@@ -660,7 +780,7 @@ def run_label_factory(artifact_dir: Path | str, pdf_path: Path | str,
         try:
             outcome = _process_artifact(path, pdf_path, out_dir, profile,
                                         dpi, synthesis, reader, store,
-                                        seen)
+                                        variants, variant_stores, seen)
         except Exception as error:
             # one bad artifact never costs the batch; an interrupt
             # (BaseException) still stops it
@@ -692,6 +812,30 @@ def run_label_factory(artifact_dir: Path | str, pdf_path: Path | str,
         "training": training,
         "paths": paths,
     }
+    if variants:
+        variant_reports: list[dict] = []
+        for variant in variants:
+            root = out_dir / "variants" / variant.name
+            entry: dict = {
+                "name": variant.name,
+                "seed": variant.seed,
+                "transforms": [transform_config(transform)
+                               for transform in variant.transforms],
+                "training": None,
+                "paths": {"root": str(root),
+                          "labels_root": str(root / "labels")},
+            }
+            if succeeded:
+                training_path = (root / "training"
+                                 / f"{profile_key(profile)}.jsonl")
+                # '#<variant>' marks the examples as degraded when
+                # per-profile exports are merged across sets
+                entry["training"] = export_training_set(
+                    root / "labels", profile, training_path,
+                    source=f"{pdf_path.name}#{variant.name}")
+                entry["paths"]["training"] = str(training_path)
+            variant_reports.append(entry)
+        report["variants"] = variant_reports
     _write_json(out_dir / "manifest.json", report)
     return report
 
@@ -722,17 +866,29 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--version", default=DEFAULT_PROFILE["version"],
                         help="Convention Profile version to stamp on"
                              " the labels")
+    parser.add_argument("--variants", type=Path, default=None,
+                        help="JSON file of degraded dataset variants to"
+                             " emit beside the clean set: a list of"
+                             " {name, seed, transforms: [{kind, ...}]}"
+                             " with kinds blur/skew/noise/compression")
     args = parser.parse_args(argv)
     report = run_label_factory(args.artifact_dir, args.pdf, args.out,
                                profile={"name": args.name,
                                         "version": args.version},
-                               dpi=args.dpi)
+                               dpi=args.dpi,
+                               variants=(load_variants(args.variants)
+                                         if args.variants is not None
+                                         else None))
     coverage = report["coverage"]
     print(f"{coverage['succeeded']}/{coverage['total_artifacts']}"
           f" artifacts -> {args.out}")
     if report["training"] is not None:
         print(f"training set: {report['training']['count']} examples"
               f" -> {report['paths']['training']}")
+    for entry in report.get("variants") or ():
+        if entry["training"] is not None:
+            print(f"variant {entry['name']}: {entry['training']['count']}"
+                  f" examples -> {entry['paths']['training']}")
 
 
 if __name__ == "__main__":
