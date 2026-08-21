@@ -82,6 +82,43 @@ def make_example(kind: str, detection: dict, verdict: object,
             "detection": detection, "correction": correction}
 
 
+# The ground-truth fields per detection kind. A pass confirms them as
+# recorded; an edit overrides exactly the corrected ones; a reject has
+# no ground truth — the detection itself is the negative. One source of
+# truth for the training export (ticket 12) and the eval harness
+# (ticket 15), so the two can never disagree on what a verdict means.
+LABEL_FIELDS = {
+    "symbol": ("symbol_class", "bbox"),
+    "line": ("line_class", "polyline"),
+    "text": ("text_class", "string", "bbox"),
+}
+
+
+def supervised_label(sheet: int, stored: dict) -> dict | None:
+    """The supervised label of one stored example — or a refusal naming
+    the record: the store's write contract validates verdicts and
+    corrections, but not kinds or detection contents."""
+    kind = stored["kind"]
+    detection = stored["detection"]
+    fields = LABEL_FIELDS.get(kind)
+    if fields is None:
+        raise ValueError(
+            f"Sheet {sheet} example {detection.get('id')!r} has kind"
+            f" {kind!r}; a labeled example is one of"
+            f" {sorted(LABEL_FIELDS)}")
+    if stored["verdict"] == "reject":
+        return None
+    try:
+        label = {field: detection[field] for field in fields}
+    except KeyError as error:
+        raise ValueError(
+            f"Sheet {sheet} {kind} {detection.get('id')!r} lacks the"
+            f" label field {error.args[0]!r}") from None
+    if stored["verdict"] == "edit":
+        label.update(stored["correction"])
+    return label
+
+
 def profile_key(profile: Mapping[str, str]) -> str:
     """One directory per Convention Profile identity + version; both
     parts percent-quoted so arbitrary identity strings cannot escape the

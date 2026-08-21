@@ -1,7 +1,8 @@
 """The three component seams, each with an offline deterministic default
 selected by configuration (hazop-ai's proven seam pattern):
 
-  SymbolDetector  — stub today, trained detector later (ticket 16)
+  SymbolDetector  — stub by default; the trained detector (ticket 16) is
+                    selected as "trained:<artifact dir>"
   TextRecognizer  — stub today, the chosen OCR engine later (ticket 18)
   GraphStore      — Cypher-script emission by default; a live local Neo4j
                     loader is the configured alternative (ticket 09)
@@ -9,6 +10,11 @@ selected by configuration (hazop-ai's proven seam pattern):
 The stubs read the ground-truth annotations a synthetic Sheet carries; real
 implementations read the raster. Both live behind the same interface, so the
 pipeline never knows which it got.
+
+A selection string is a registry name, optionally followed by
+":<options>" for implementations that take them (a factory exposing
+from_options) — how the trained detector names its artifact directory
+without the pipeline above the seam changing shape.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .cypher_store import CypherScriptGraphStore
+from .detector import TrainedSymbolDetector
 from .lexicon import CONFUSION_PAIRS
 from .neo4j_store import Neo4jGraphStore
 from .model import (
@@ -115,7 +122,8 @@ class StubTextRecognizer:
         return detections
 
 
-SYMBOL_DETECTORS = {"stub": StubSymbolDetector}
+SYMBOL_DETECTORS = {"stub": StubSymbolDetector,
+                    "trained": TrainedSymbolDetector}
 TEXT_RECOGNIZERS = {"stub": StubTextRecognizer}
 GRAPH_STORES = {"cypher-script": CypherScriptGraphStore,
                 "neo4j": Neo4jGraphStore}
@@ -130,13 +138,22 @@ class PipelineConfig:
     graph_store: str = "cypher-script"
 
 
-def _resolve(registry: dict, name: str, seam: str):
+def _resolve(registry: dict, spec: str, seam: str):
+    name, has_options, options = spec.partition(":")
     try:
-        return registry[name]()
+        factory = registry[name]
     except KeyError:
         raise KeyError(
             f"unknown {seam} {name!r}; available: {sorted(registry)}"
         ) from None
+    if not has_options:
+        return factory()
+    from_options = getattr(factory, "from_options", None)
+    if from_options is None:
+        raise ValueError(
+            f"{seam} {name!r} takes no ':<options>'; select it as plain"
+            f" {name!r}")
+    return from_options(options)
 
 
 def build_components(

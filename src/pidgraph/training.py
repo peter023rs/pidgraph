@@ -19,43 +19,9 @@ import os
 from pathlib import Path
 from typing import Mapping
 
-from .labels import LabelStore, profile_key
-
-# The ground-truth fields per detection kind. A pass confirms them as
-# recorded; an edit overrides exactly the corrected ones; a reject has
-# no ground truth — the detection itself is the negative.
-_LABEL_FIELDS = {
-    "symbol": ("symbol_class", "bbox"),
-    "line": ("line_class", "polyline"),
-    "text": ("text_class", "string", "bbox"),
-}
+from .labels import LabelStore, profile_key, supervised_label
 
 _ROLES = {"pass": "positive", "reject": "negative", "edit": "corrected"}
-
-
-def _label(sheet: int, stored: dict) -> dict | None:
-    """The supervised label of one stored example — or a refusal naming
-    the record: the store's write contract validates verdicts and
-    corrections, but not kinds or detection contents."""
-    kind = stored["kind"]
-    detection = stored["detection"]
-    fields = _LABEL_FIELDS.get(kind)
-    if fields is None:
-        raise ValueError(
-            f"Sheet {sheet} example {detection.get('id')!r} has kind"
-            f" {kind!r}; a training example is one of"
-            f" {sorted(_LABEL_FIELDS)}")
-    if stored["verdict"] == "reject":
-        return None
-    try:
-        label = {field: detection[field] for field in fields}
-    except KeyError as error:
-        raise ValueError(
-            f"Sheet {sheet} {kind} {detection.get('id')!r} lacks the"
-            f" label field {error.args[0]!r}") from None
-    if stored["verdict"] == "edit":
-        label.update(stored["correction"])
-    return label
 
 
 def _training_example(profile: Mapping[str, str], source: str | None,
@@ -64,7 +30,7 @@ def _training_example(profile: Mapping[str, str], source: str | None,
             "kind": stored["kind"], "verdict": stored["verdict"],
             "example": _ROLES[stored["verdict"]],
             "detection": stored["detection"],
-            "label": _label(sheet, stored)}
+            "label": supervised_label(sheet, stored)}
 
 
 def export_training_set(labels_root: Path | str,
