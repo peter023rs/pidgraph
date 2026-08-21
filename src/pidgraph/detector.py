@@ -23,6 +23,13 @@ emits detections whose confidence is the match score and whose
 provenance names the detector version — the content hash stamped into
 the artifact at training time and verified at load, so a hand-edited
 artifact is refused rather than silently misreported.
+
+Beside it lives the candidate cheap adaptation mechanism (ticket 17):
+the Legend Dictionary nearest-neighbor classifier, which matches the
+same way against the Convention Profile bundle's own glyph crops
+instead of trained prototypes. Architecture is identical — the same
+seam, selected by configuration — only onboarding cost differs, and
+the eval harness judges the two side by side on evidence.
 """
 
 from __future__ import annotations
@@ -33,12 +40,20 @@ import math
 import os
 from pathlib import Path
 from typing import Mapping, NamedTuple, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from .labels import LabelStore, profile_key, supervised_label
-from .model import ConventionProfile, Provenance, Sheet, SymbolDetection
+from .model import (
+    UNCLASSIFIED_SYMBOL,
+    Bbox,
+    ConventionProfile,
+    Provenance,
+    Sheet,
+    SymbolDetection,
+)
 from .normalize import TARGET_LONG_SIDE, normalize_sheet
 from .pngio import decode_gray_png, encode_gray_png
+from .profile import load_profile
 
 DETECTOR_FORMAT = "pidgraph-trained-symbol-detector/1"
 
@@ -452,6 +467,8 @@ class _ClassMatcher:
     def __init__(self, symbol_class: str, entry: Mapping,
                  quantized: bytes):
         self.symbol_class = symbol_class
+        self.prototype = entry["prototype"]  # the crop file; provenance
+                                             # names it as what matched
         self.width = entry["width"]
         self.height = entry["height"]
         self.threshold = entry["threshold"]
@@ -474,6 +491,52 @@ class _Candidate(NamedTuple):
     matcher: _ClassMatcher
     x: int
     y: int
+
+
+def _scan(matcher: _ClassMatcher, bits: bytes, width: int,
+          height: int, integral: list[int]) -> list[_Candidate]:
+    """Every window of one matcher's size whose ink can match (the
+    integral-image prefilter) and whose Pearson score clears the
+    matcher's threshold — the one candidate proposer the trained
+    detector and the legend-nn classifier share."""
+    w, h, n = matcher.width, matcher.height, matcher.n
+    if w > width or h > height:
+        return []
+    min_ink = max(1.0, _MIN_INK_RATIO * matcher.prototype_sum)
+    max_ink = _MAX_INK_RATIO * matcher.prototype_sum
+    pairs = [(dy * width + dx, p) for dy, dx, p in matcher.cells]
+    prototype_sum = matcher.prototype_sum
+    variance_term = matcher.variance_term
+    threshold = matcher.threshold
+    stride = width + 1
+    candidates = []
+    for y in range(height - h + 1):
+        top = y * stride
+        bottom = (y + h) * stride
+        base = y * width
+        for x in range(width - w + 1):
+            ink = (integral[bottom + x + w] - integral[bottom + x]
+                   - integral[top + x + w] + integral[top + x])
+            if ink < min_ink or ink > max_ink or ink == n:
+                continue
+            anchor = base + x
+            cross = sum(p for offset, p in pairs
+                        if bits[anchor + offset])
+            score = _correlation(n, cross, ink, prototype_sum,
+                                 variance_term)
+            if score >= threshold:
+                candidates.append(_Candidate(score, matcher, x, y))
+    return candidates
+
+
+def _trimmed_bbox(matcher: _ClassMatcher, x: int, y: int) -> Bbox:
+    """The matched window with the learned context ring (trained path)
+    or the glyph crop's paper ring (legend-nn path) trimmed back off."""
+    trim_x = min(_CONTEXT_MARGIN, (matcher.width - _MIN_SIDE) // 2)
+    trim_y = min(_CONTEXT_MARGIN, (matcher.height - _MIN_SIDE) // 2)
+    return (float(x + trim_x), float(y + trim_y),
+            float(x + matcher.width - trim_x),
+            float(y + matcher.height - trim_y))
 
 
 class TrainedSymbolDetector:
@@ -552,37 +615,6 @@ class TrainedSymbolDetector:
     def from_options(cls, options: str) -> "TrainedSymbolDetector":
         return cls(options)
 
-    def _scan(self, matcher: _ClassMatcher, bits: bytes, width: int,
-              height: int, integral: list[int]) -> list[_Candidate]:
-        w, h, n = matcher.width, matcher.height, matcher.n
-        if w > width or h > height:
-            return []
-        min_ink = max(1.0, _MIN_INK_RATIO * matcher.prototype_sum)
-        max_ink = _MAX_INK_RATIO * matcher.prototype_sum
-        pairs = [(dy * width + dx, p) for dy, dx, p in matcher.cells]
-        prototype_sum = matcher.prototype_sum
-        variance_term = matcher.variance_term
-        threshold = matcher.threshold
-        stride = width + 1
-        candidates = []
-        for y in range(height - h + 1):
-            top = y * stride
-            bottom = (y + h) * stride
-            base = y * width
-            for x in range(width - w + 1):
-                ink = (integral[bottom + x + w] - integral[bottom + x]
-                       - integral[top + x + w] + integral[top + x])
-                if ink < min_ink or ink > max_ink or ink == n:
-                    continue
-                anchor = base + x
-                cross = sum(p for offset, p in pairs
-                            if bits[anchor + offset])
-                score = _correlation(n, cross, ink, prototype_sum,
-                                     variance_term)
-                if score >= threshold:
-                    candidates.append(_Candidate(score, matcher, x, y))
-        return candidates
-
     def detect(self, sheet: Sheet,
                profile: ConventionProfile) -> list[SymbolDetection]:
         if sheet.raster is None:
@@ -602,8 +634,8 @@ class TrainedSymbolDetector:
         integral = _integral_image(bits, width, height)
         candidates = []
         for matcher in self._matchers:
-            candidates.extend(self._scan(matcher, bits, width, height,
-                                         integral))
+            candidates.extend(_scan(matcher, bits, width, height,
+                                    integral))
         # best score wins ink; ties break by class then position, so the
         # detection list is deterministic
         candidates.sort(key=lambda c: (-c.score, c.matcher.symbol_class,
@@ -612,12 +644,7 @@ class TrainedSymbolDetector:
         kept: list[tuple] = []
         detections: list[SymbolDetection] = []
         for score, matcher, x, y in candidates:
-            trim_x = min(_CONTEXT_MARGIN, (matcher.width - _MIN_SIDE) // 2)
-            trim_y = min(_CONTEXT_MARGIN,
-                         (matcher.height - _MIN_SIDE) // 2)
-            bbox = (float(x + trim_x), float(y + trim_y),
-                    float(x + matcher.width - trim_x),
-                    float(y + matcher.height - trim_y))
+            bbox = _trimmed_bbox(matcher, x, y)
             if _suppresses(kept, bbox):
                 continue
             kept.append(bbox)
@@ -635,6 +662,201 @@ class TrainedSymbolDetector:
                              f" {score:.3f} (threshold"
                              f" {matcher.threshold})"),
                 direction=matcher.direction,
+            ))
+        return detections
+
+
+# --------------------------------------------------------------------------
+# The Legend Dictionary nearest-neighbor classifier (ticket 17)
+
+GLYPHS_DIR = "glyphs"
+
+# The acceptance band is pinned with the classifier: there are no labeled
+# crops to calibrate per-class thresholds from — that missing calibration
+# data is exactly the onboarding cost this path avoids, priced here as
+# fixed thresholds. A candidate scoring under the floor is not a symbol
+# report at all; one landing between floor and acceptance is surfaced as
+# UNCLASSIFIED_SYMBOL rather than force-assigned its nearest entry.
+_NN_ACCEPT_SCORE = 0.6
+_NN_CANDIDATE_FLOOR = 0.35
+
+# A below-acceptance window offset from a real symbol correlates off that
+# symbol's own ink; when this fraction of its ink is already inside kept
+# detections' windows it is the same ink reported twice, not an unnamed
+# symbol worth surfacing.
+_NN_CLAIMED_INK = 0.5
+
+
+def _box_ink(integral: list[int], width: int,
+             box: tuple[int, int, int, int]) -> int:
+    x0, y0, x1, y1 = box
+    stride = width + 1
+    return (integral[y1 * stride + x1] - integral[y1 * stride + x0]
+            - integral[y0 * stride + x1] + integral[y0 * stride + x0])
+
+
+def _mostly_claimed(integral: list[int], width: int,
+                    window: tuple[int, int, int, int],
+                    kept_windows: list[tuple[int, int, int, int]]) -> bool:
+    """Whether a window's ink is mostly ink kept detections already
+    explain (see _NN_CLAIMED_INK)."""
+    wx0, wy0, wx1, wy1 = window
+    total = _box_ink(integral, width, window)
+    claimed = 0
+    for kx0, ky0, kx1, ky1 in kept_windows:
+        ix0, iy0 = max(wx0, kx0), max(wy0, ky0)
+        ix1, iy1 = min(wx1, kx1), min(wy1, ky1)
+        if ix1 > ix0 and iy1 > iy0:
+            claimed += _box_ink(integral, width, (ix0, iy0, ix1, iy1))
+            if claimed >= _NN_CLAIMED_INK * total:
+                return True
+    return False
+
+
+class LegendNNSymbolDetector:
+    """The candidate cheap adaptation mechanism behind the SymbolDetector
+    seam: candidate windows proposed by the trained path's own sliding
+    scan, each assigned its nearest Legend Dictionary entry — the
+    Convention Profile bundle glyph with the highest Pearson correlation.
+    Selected by configuration as 'legend-nn:<profile bundle dir>'.
+
+    Confidence is the match score (distance = 1 - score), and provenance
+    names the Legend Dictionary entry and glyph file matched. Glyph crops
+    are taken at the pipeline's operating scale (the normalized frame)
+    with the same 2 px paper ring the trained path's context margin
+    learns; the emitted bbox trims the ring back off.
+
+    FlowArrow glyphs are refused at load: a nearest-neighbor match
+    against a static glyph asserts no orientation, and a direction is
+    never guessed into the assembly stage."""
+
+    def __init__(self, bundle_dir: "Path | str | None" = None):
+        # the None default exists for the seam registry: a bare
+        # "legend-nn" selection constructs with no arguments and must
+        # fail with the syntax hint, not a TypeError
+        if not bundle_dir:
+            raise ValueError(
+                "the legend-nn classifier is selected with its Convention"
+                " Profile bundle: 'legend-nn:<profile bundle dir>'")
+        self.bundle = Path(bundle_dir)
+        profile = load_profile(self.bundle)
+        self.profile = profile.identity_record()
+
+        glyph_paths = sorted((self.bundle / GLYPHS_DIR).glob("*.png"))
+        if not glyph_paths:
+            raise ValueError(
+                f"{self.bundle} holds no Legend Dictionary glyphs"
+                f" ({GLYPHS_DIR}/*.png) — the legend-nn classifier"
+                " matches candidates against the Legend Sheet's symbol"
+                " crops")
+
+        digest = hashlib.sha256()
+        digest.update(json.dumps(self.profile, sort_keys=True,
+                                 ensure_ascii=False).encode("utf-8"))
+        self._matchers = []
+        for path in glyph_paths:
+            symbol_class = unquote(path.stem)
+            entry = profile.legend.get(symbol_class)
+            if entry is None:
+                raise ValueError(
+                    f"glyph {path.name} names {symbol_class!r}, which is"
+                    f" not in Convention Profile {profile.name!r}'s"
+                    " Legend Dictionary")
+            if entry.role == "FlowArrow":
+                raise ValueError(
+                    f"glyph {path.name}: {symbol_class!r} is a FlowArrow"
+                    " — a nearest-neighbor glyph match asserts no"
+                    " orientation, and a direction is never guessed;"
+                    " flow arrows need the trained path's oriented"
+                    " prototypes")
+            width, height, pixels = decode_gray_png(path.read_bytes())
+            if width < _MIN_SIDE or height < _MIN_SIDE:
+                raise ValueError(
+                    f"glyph {path.name} is {width}x{height} — a glyph"
+                    f" crop needs at least {_MIN_SIDE} px on each side")
+            bits = _ink_bits(pixels)
+            ink = sum(bits)
+            if ink == 0 or ink == width * height:
+                raise ValueError(
+                    f"glyph {path.name} is uniform"
+                    f" ({'all ink' if ink else 'all paper'}) — it"
+                    " correlates with nothing and can never match")
+            digest.update(f"{path.name}:{width}x{height}".encode("utf-8"))
+            digest.update(pixels)
+            self._matchers.append(_ClassMatcher(
+                symbol_class,
+                {"prototype": path.name, "width": width, "height": height,
+                 "threshold": _NN_CANDIDATE_FLOOR, "direction": None},
+                bytes(255 * bit for bit in bits)))
+
+        self.version = digest.hexdigest()[:12]
+        self.component = f"symbol_detector:legend-nn@{self.version}"
+
+    @classmethod
+    def from_options(cls, options: str) -> "LegendNNSymbolDetector":
+        return cls(options)
+
+    def detect(self, sheet: Sheet,
+               profile: ConventionProfile) -> list[SymbolDetection]:
+        if sheet.raster is None:
+            raise ValueError(
+                f"{self.component} reads pixels; Sheet {sheet.number}"
+                f" carries no raster")
+        identity = profile.identity_record()
+        if identity != self.profile:
+            raise ValueError(
+                f"the Legend Dictionary glyphs under {self.bundle} belong"
+                f" to profile {self.profile!r}; refusing to classify for"
+                f" {identity!r} — a Convention Profile's glyphs do not"
+                " transfer")
+
+        width, height = sheet.width, sheet.height
+        bits = _ink_bits(sheet.raster)
+        integral = _integral_image(bits, width, height)
+        candidates = []
+        for matcher in self._matchers:
+            candidates.extend(_scan(matcher, bits, width, height,
+                                    integral))
+        # the nearest neighbor wins ink: a window's best-correlating
+        # glyph claims it before any farther entry; ties break by class
+        # then position, so the detection list is deterministic
+        candidates.sort(key=lambda c: (-c.score, c.matcher.symbol_class,
+                                       c.y, c.x))
+
+        kept: list[tuple] = []
+        kept_windows: list[tuple[int, int, int, int]] = []
+        detections: list[SymbolDetection] = []
+        for score, matcher, x, y in candidates:
+            bbox = _trimmed_bbox(matcher, x, y)
+            if _suppresses(kept, bbox):
+                continue
+            window = (x, y, x + matcher.width, y + matcher.height)
+            if (score < _NN_ACCEPT_SCORE
+                    and _mostly_claimed(integral, width, window,
+                                        kept_windows)):
+                continue
+            kept.append(bbox)
+            kept_windows.append(window)
+            nearest = (f"nearest Legend Dictionary entry"
+                       f" {matcher.symbol_class!r} (glyph"
+                       f" {matcher.prototype}) at ({x}, {y}): score"
+                       f" {score:.3f}, distance {1 - score:.3f}")
+            if score >= _NN_ACCEPT_SCORE:
+                symbol_class = matcher.symbol_class
+                evidence = f"{nearest} (accept >= {_NN_ACCEPT_SCORE})"
+            else:
+                symbol_class = UNCLASSIFIED_SYMBOL
+                evidence = (f"{nearest}, below acceptance"
+                            f" {_NN_ACCEPT_SCORE} — surfaced unclassified"
+                            " rather than force-assigned")
+            detections.append(SymbolDetection(
+                id=f"p{sheet.number}-sym{len(detections)}",
+                sheet=sheet.number,
+                symbol_class=symbol_class,
+                bbox=bbox,
+                confidence=min(1.0, score),
+                provenance=Provenance(component=self.component,
+                                      evidence=evidence),
             ))
         return detections
 

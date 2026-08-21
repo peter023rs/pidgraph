@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from pidgraph.model import LegendEntry
+from pidgraph.model import UNCLASSIFIED_SYMBOL, LegendEntry
 from pidgraph.pipeline import digitize
 from pidgraph.profile import ProfileError, load_profile
 
@@ -103,6 +103,19 @@ def test_unknown_legend_role_fails_at_load(tmp_path):
             lambda d: d["tank"].__setitem__("role", "Vessel"))
 
     with pytest.raises(ProfileError, match=r"legend\.json: .*tank.*Vessel"):
+        load_profile(bundle)
+
+
+def test_the_reserved_unclassified_class_fails_at_load(tmp_path):
+    """UNCLASSIFIED_SYMBOL is what a detector emits for ink it could not
+    name (ticket 17) — a Legend Dictionary defining it as a real class
+    would let assembly silently skip real symbols."""
+    bundle = editable_copy(tmp_path)
+    rewrite(bundle, "legend.json",
+            lambda d: d.__setitem__(UNCLASSIFIED_SYMBOL,
+                                    {"role": "Equipment"}))
+
+    with pytest.raises(ProfileError, match="reserved"):
         load_profile(bundle)
 
 

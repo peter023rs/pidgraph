@@ -97,6 +97,13 @@ class ConventionProfile:
 # --------------------------------------------------------------------------
 # Output side: detections at the component seams, run artifacts at the top
 
+# The reserved symbol class a detector emits for ink it found but could
+# not confidently name (ticket 17). It stays in the detection record for
+# review, but assembly never turns it into a plant item, and a Legend
+# Dictionary may not define it as a real class (load_profile refuses).
+UNCLASSIFIED_SYMBOL = "unclassified"
+
+
 @dataclass(frozen=True)
 class Provenance:
     component: str  # which component produced the element

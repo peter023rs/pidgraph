@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 
 from .model import (
+    UNCLASSIFIED_SYMBOL,
     Bbox,
     ConventionProfile,
     LegendEntry,
@@ -310,6 +311,10 @@ def assemble_sheet(sheet: Sheet,
     nozzles: list[SymbolDetection] = []
     arrows: list[SymbolDetection] = []
     for detection in symbols:
+        if detection.symbol_class == UNCLASSIFIED_SYMBOL:
+            continue  # fail-closed (ticket 17): an unclassified symbol
+                      # stays in the detection record for review but
+                      # never becomes a plant item
         entry = _legend_entry(profile, detection)
         if entry.role in _TERMINAL_ROLES:
             terminals.append(Terminal(detection=detection, entry=entry))

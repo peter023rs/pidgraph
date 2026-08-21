@@ -10,6 +10,10 @@ Legend Sheet ingest in v1), holding an identity file and the three parts:
     line_styles.json     stroke style -> line_class (optional part: where a
                          style is left unmapped, extracted runs keep the
                          style name as their line_class)
+    glyphs/              optional: one PNG crop per symbol class (URL-quoted
+                         class name), the Legend Dictionary glyphs the
+                         legend-nn SymbolDetector (ticket 17) matches
+                         against; validated by that classifier at selection
 
 Loading validates the whole bundle up front and reports every problem at
 once — a bad profile fails here, never mid-run.
@@ -22,7 +26,7 @@ import re
 from pathlib import Path
 
 from .dexpi import SEGMENT_CLASSES
-from .model import ConventionProfile, LegendEntry
+from .model import UNCLASSIFIED_SYMBOL, ConventionProfile, LegendEntry
 
 ROLES = frozenset({
     "Equipment", "PipingComponent", "ProcessInstrumentationFunction",
@@ -108,6 +112,12 @@ def _legend(raw: dict, problems: list[str]) -> dict[str, LegendEntry]:
                         "least one symbol class")
     legend = {}
     for symbol_class, entry_raw in raw.items():
+        if symbol_class == UNCLASSIFIED_SYMBOL:
+            problems.append(
+                f"legend.json: {symbol_class!r} is reserved for detections"
+                " no classifier could name — a Legend Dictionary cannot"
+                " define it as a real symbol class")
+            continue
         entry = _legend_entry(symbol_class, entry_raw, problems)
         if entry is not None:
             legend[symbol_class] = entry
