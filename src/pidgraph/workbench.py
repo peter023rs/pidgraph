@@ -13,6 +13,12 @@ each Sheet's review state (untouched, in progress, reviewed), derived on
 every request from the persisted verdicts, so a 400-Sheet review splits
 across days and restarts without losing its place.
 
+Product KPI (ticket 19): the Workbench logs its own activity — every
+Sheet opened, every verdict saved, at the server's clock — beside the
+verdicts, and shows the operator the KPI (corrections per 100 symbols,
+reviewer minutes per accepted Sheet) recomputed from the persisted
+verdicts and activity, with the measurement basis stated.
+
 The Workbench reads run artifacts only — detections/sheet_N.json and
 sheets/sheet_N.png — and has no path to invoke extraction: nothing from
 the engine (pipeline, seams, batch) is imported here.
@@ -20,14 +26,27 @@ the engine (pipeline, seams, batch) is imported here.
 
 from __future__ import annotations
 
-import json
-import re
-from collections.abc import Iterator
 from html import escape
 from pathlib import Path
 
 from flask import Flask, abort, render_template_string, request, send_file
 
+from .artifacts import (
+    KINDS,
+    RecordSummaries,
+    iter_detections,
+    load_record,
+    load_sheets,
+    review_state,
+)
+from .kpi import (
+    DEFAULT_IDLE_MINUTES,
+    ActivityLog,
+    Clock,
+    display_kpi,
+    kpi_report,
+    run_kpi,
+)
 from .labels import LabelStore, make_example
 
 _INDEX_HTML = """<!doctype html>
@@ -40,6 +59,10 @@ _INDEX_HTML = """<!doctype html>
   [data-state="in progress"] { color: #a60; }
   [data-state="unreadable"] { color: #c00; }
   [data-state] a { color: inherit; }
+  #kpi { border: 1px solid #ccc; padding: 0.5rem 1rem; margin-top: 1rem;
+         max-width: 60em; }
+  #kpi dt { font-weight: bold; margin-top: 0.5rem; }
+  #kpi .basis { color: #555; font-size: 0.9em; }
 </style>
 </head>
 <body>
@@ -51,6 +74,27 @@ _INDEX_HTML = """<!doctype html>
  {{ row.decided }}/{{ row.total }} reviewed</li>
 {% endfor %}
 </ul>
+<section id="kpi">
+<h2>Product KPI</h2>
+<dl>
+  <dt>Corrections per 100 symbols</dt>
+  <dd><span data-kpi="corrections_per_100_symbols">{{
+      display_kpi(kpi.corrections_per_100_symbols) }}</span> —
+      {{ kpi.by_kind.symbol.reviewed }} symbols reviewed,
+      {{ kpi.by_kind.symbol.corrections }} corrections (reject + edit)
+      <div class="basis">{{ basis.corrections_per_100_symbols }}</div></dd>
+  <dt>Reviewer minutes per accepted Sheet</dt>
+  <dd><span data-kpi="reviewer_minutes_per_accepted_sheet">{{
+      display_kpi(kpi.reviewer_minutes_per_accepted_sheet) }}</span> —
+      {{ kpi.sheets_summary.accepted }} accepted of {{
+      kpi.sheets_summary.total }} Sheets, {{
+      kpi.sheets_summary.accepted_timed }} timed by the Workbench log
+      <div class="basis">{{ basis.reviewer_minutes_per_accepted_sheet }}
+      </div></dd>
+</dl>
+<p><a href="/kpi">full KPI report (JSON)</a> — recomputed from the
+persisted verdicts and activity on every request</p>
+</section>
 </body>
 </html>
 """
@@ -270,25 +314,9 @@ def _overlay_svg(record: dict, examples: dict) -> str:
     return "".join(parts)
 
 
-def _sheet_record(run_dir: Path, number: int) -> dict | None:
-    path = run_dir / "detections" / f"sheet_{number}.json"
-    if not path.is_file():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-_KINDS = (("symbol", "symbols"), ("line", "lines"), ("text", "texts"))
-
-
-def _iter_detections(record: dict) -> Iterator[tuple[str, dict]]:
-    for kind, field in _KINDS:
-        for detection in record[field]:
-            yield kind, detection
-
-
 def _find_detection(record: dict,
                     detection_id: object) -> tuple[str, dict] | None:
-    for kind, detection in _iter_detections(record):
+    for kind, detection in iter_detections(record):
         if detection["id"] == detection_id:
             return kind, detection
     return None
@@ -300,7 +328,7 @@ def _queue_payload(sheet: int, record: dict, examples: dict,
     reviewer minutes go to the elements most likely to be wrong. Ties
     keep record order (the sort is stable), so the queue is deterministic
     across requests and restarts."""
-    scoped = [(k, d) for k, d in _iter_detections(record)
+    scoped = [(k, d) for k, d in iter_detections(record)
               if kind is None or k == kind]
     pending = [{"id": d["id"], "kind": k, "confidence": d["confidence"]}
                for k, d in scoped if d["id"] not in examples]
@@ -314,120 +342,98 @@ def _review_state(sheet: int, ids: frozenset[str],
                   examples: dict) -> dict:
     """One Sheet's review state from verdict coverage. Only verdicts on
     detections this Sheet actually contains count — labels persisted
-    against another run's artifacts never inflate coverage. A Sheet with
-    nothing detected needs no reviewer minutes, so it counts as
-    reviewed."""
+    against another run's artifacts never inflate coverage."""
     decided = len(ids & examples.keys())
-    if decided == len(ids):
-        state = "reviewed"
-    elif decided == 0:
-        state = "untouched"
-    else:
-        state = "in progress"
-    return {"sheet": sheet, "state": state,
+    return {"sheet": sheet, "state": review_state(decided, len(ids)),
             "decided": decided, "total": len(ids)}
 
 
-def _sheet_numbers(run_dir: Path) -> list[int]:
-    pattern = re.compile(r"sheet_(\d+)\.json")
-    return sorted(
-        int(match.group(1))
-        for path in (run_dir / "detections").glob("sheet_*.json")
-        if (match := pattern.fullmatch(path.name)))
-
-
 def create_app(run_dir: Path | str,
-               labels_dir: Path | str | None = None) -> Flask:
+               labels_dir: Path | str | None = None,
+               clock: Clock | None = None,
+               idle_minutes: float = DEFAULT_IDLE_MINUTES) -> Flask:
     """The Workbench over one run's artifacts. Verdicts persist under
     labels_dir — by default labels/ inside the run directory, keeping
-    labeled examples outside git alongside the artifacts (ADR-0001).
-    Labeled examples are keyed by Convention Profile and Sheet number, so
-    an overridden labels_dir must not be shared across runs of different
-    Documents: their Sheet numbers would collide."""
+    labeled examples outside git alongside the artifacts (ADR-0001) — and
+    the activity log lives beside them. Labeled examples are keyed by
+    Convention Profile and Sheet number, so an overridden labels_dir must
+    not be shared across runs of different Documents: their Sheet numbers
+    would collide. clock stamps activity (default: the system's UTC
+    clock); idle_minutes is the KPI's break threshold."""
     run_dir = Path(run_dir)
     store = LabelStore(run_dir / "labels" if labels_dir is None
                        else labels_dir)
+    activity = ActivityLog(store.root, clock)
+    # Detection records never change while a run is under review, so the
+    # Document-level views share one summary cache keyed on each record
+    # file's stat. Labels and activity are never cached: review state and
+    # KPI are recomputed from the persisted store on every request, never
+    # from session memory.
+    summaries = RecordSummaries(run_dir)
     app = Flask(__name__)
 
-    def load_record(number: int) -> dict:
-        record = _sheet_record(run_dir, number)
+    def record_for(number: int) -> dict:
+        record = load_record(run_dir, number)
         if record is None:
             abort(404, f"no run artifacts for Sheet {number}")
         return record
 
     # A Sheet's identity is the number its artifact file is served
-    # under — the same number in the URL — so labels, queue and progress
-    # all key one way even if a record's internal "sheet" field disagrees
-    # with its filename.
+    # under — the same number in the URL — so labels, queue, progress and
+    # KPI all key one way even if a record's internal "sheet" field
+    # disagrees with its filename.
     def load_examples(record: dict, number: int) -> dict:
         return store.sheet_labels(record["profile"], number)["examples"]
 
-    # Detection records never change while a run is under review, so the
-    # Document-level view caches each record's profile and detection ids
-    # against the file's stat instead of re-parsing full geometry on
-    # every request of a 400-Sheet index. Labels are never cached:
-    # review state is recomputed from the persisted verdicts on every
-    # request, never from session memory.
-    summaries: dict[int, tuple[tuple[int, int], tuple[dict, frozenset]]]
-    summaries = {}
-
-    def record_summary(number: int) -> tuple[dict, frozenset] | None:
-        path = run_dir / "detections" / f"sheet_{number}.json"
-        try:
-            stat = path.stat()
-        except OSError:
-            return None
-        key = (stat.st_mtime_ns, stat.st_size)
-        cached = summaries.get(number)
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        record = json.loads(path.read_text(encoding="utf-8"))
-        summary = (record["profile"],
-                   frozenset(d["id"]
-                             for _, d in _iter_detections(record)))
-        summaries[number] = (key, summary)
-        return summary
-
     def review_states() -> list[dict]:
         rows = []
-        for number in _sheet_numbers(run_dir):
-            try:
-                summary = record_summary(number)
-            except ValueError:
+        for number, summary in load_sheets(run_dir, summaries):
+            if summary is None:
                 # a run killed mid-write leaves a truncated record; one
                 # bad Sheet must not take down the whole Document's view
                 rows.append({"sheet": number, "state": "unreadable",
                              "decided": 0, "total": 0})
-                continue
-            if summary is None:
                 continue
             profile, ids = summary
             examples = store.sheet_labels(profile, number)["examples"]
             rows.append(_review_state(number, ids, examples))
         return rows
 
+    def kpi() -> dict:
+        return kpi_report([run_kpi(run_dir, store.root, idle_minutes,
+                                   summaries)])
+
     @app.get("/")
     def index():
-        return render_template_string(_INDEX_HTML,
-                                      sheets=review_states())
+        report = kpi()
+        return render_template_string(_INDEX_HTML, sheets=review_states(),
+                                      kpi=report["overall"],
+                                      basis=report["basis"],
+                                      display_kpi=display_kpi)
 
     @app.get("/progress")
     def progress():
         return {"sheets": review_states()}
 
+    @app.get("/kpi")
+    def kpi_json():
+        return kpi()
+
     @app.get("/sheet/<int:number>/queue")
     def sheet_queue(number: int):
-        record = load_record(number)
+        record = record_for(number)
         kind = request.args.get("kind")
-        if kind is not None and kind not in dict(_KINDS):
-            return (f"kind must be one of {sorted(dict(_KINDS))},"
+        if kind is not None and kind not in dict(KINDS):
+            return (f"kind must be one of {sorted(dict(KINDS))},"
                     f" got {kind!r}", 400)
         return _queue_payload(number, record,
                               load_examples(record, number), kind)
 
     @app.get("/sheet/<int:number>")
     def sheet_html(number: int):
-        record = load_record(number)
+        record = record_for(number)
+        # opening a Sheet for review is activity the KPI times by
+        activity.record("open", number)
         return render_template_string(
             _SHEET_HTML, number=number,
             overlay=_overlay_svg(record, load_examples(record, number)))
@@ -441,12 +447,12 @@ def create_app(run_dir: Path | str,
 
     @app.get("/sheet/<int:number>/verdicts")
     def sheet_verdicts(number: int):
-        record = load_record(number)
+        record = record_for(number)
         return store.sheet_labels(record["profile"], number)
 
     @app.post("/sheet/<int:number>/verdicts")
     def post_verdict(number: int):
-        record = load_record(number)
+        record = record_for(number)
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return "expected a JSON object", 400
@@ -461,7 +467,12 @@ def create_app(run_dir: Path | str,
                                    payload.get("correction"))
         except ValueError as error:
             return str(error), 400
-        return store.record(record["profile"], number, example)
+        store.record(record["profile"], number, example)
+        # a saved verdict is activity: identifier and verdict only, the
+        # detection and any correction live in the verdict store
+        activity.record("verdict", number, detection_id=detection["id"],
+                        verdict=example["verdict"])
+        return example
 
     return app
 
@@ -477,12 +488,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--labels-dir", type=Path, default=None,
                         help="where verdicts persist"
                              " (default: <run_dir>/labels)")
+    parser.add_argument("--idle-minutes", type=float,
+                        default=DEFAULT_IDLE_MINUTES,
+                        help="KPI: an interval between Workbench events"
+                             " longer than this is a break, not review"
+                             f" time (default {DEFAULT_IDLE_MINUTES:g})")
     parser.add_argument("--port", type=int, default=5088)
     args = parser.parse_args(argv)
     # local-only, like every part of pidgraph that touches drawing
     # content (ADR-0001)
-    create_app(args.run_dir, args.labels_dir).run(host="127.0.0.1",
-                                                  port=args.port)
+    create_app(args.run_dir, args.labels_dir,
+               idle_minutes=args.idle_minutes).run(host="127.0.0.1",
+                                                   port=args.port)
 
 
 if __name__ == "__main__":

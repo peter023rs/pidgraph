@@ -11,6 +11,7 @@ Process topology (all coordinates fixed):
     PI-100 (instrument bubble) sits above the valve, unconnected.
 """
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -109,3 +110,22 @@ def synthetic_profile() -> ConventionProfile:
     suite exercises the on-disk profile loader."""
     return load_profile(Path(__file__).parent / "fixtures" / "profiles"
                         / "synthetic-test")
+
+
+# --------------------------------------------------------------------------
+# A controllable clock standing in for the Workbench server's (ticket 19)
+
+T0 = "2026-08-21T09:00:00+00:00"
+
+
+class FakeClock:
+    """Time moves only when a test says so."""
+
+    def __init__(self, start: str = T0):
+        self.now = datetime.fromisoformat(start)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def tick(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
