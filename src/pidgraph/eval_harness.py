@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -414,13 +416,26 @@ def _aggregate(per_sheet: Sequence[dict]) -> dict:
     return {"symbol": symbol, "tag": tag, "connectivity": connectivity}
 
 
+def _component_name(component) -> str:
+    """What a seam implementation calls itself in provenance — the stubs
+    a class constant, real implementations an instance attribute
+    carrying their version."""
+    name = getattr(component, "component", None) \
+        or getattr(component, "COMPONENT", None)
+    return str(name) if name else type(component).__name__
+
+
 def evaluate(eval_sheets: Sequence[EvalSheet], profile: ConventionProfile,
              config: PipelineConfig | None = None) -> dict:
     """Score one configured pipeline against the eval set: gate scores
     with pass/fail per pinned gate, per-Sheet detail, and honest
     coverage — a Sheet that fails to digitize is listed and its truth
-    counted as missed."""
+    counted as missed. The report also names the components that
+    produced the scores (their provenance identity, version included)
+    and the wall-clock seconds the run took, so two reports say exactly
+    what was compared and at what cost."""
     config = config or PipelineConfig()
+    started = time.perf_counter()
     detector, recognizer, _ = build_components(config)  # the GraphStore
     # seam is not scored: gates end at the assembled topology
 
@@ -445,6 +460,9 @@ def evaluate(eval_sheets: Sequence[EvalSheet], profile: ConventionProfile,
         "harness_version": HARNESS_VERSION,
         "profile": profile.identity_record(),
         "config": asdict(config),
+        "components": {"symbol_detector": _component_name(detector),
+                       "text_recognizer": _component_name(recognizer)},
+        "seconds": round(time.perf_counter() - started, 3),
         "coverage": {"sheets": len(eval_sheets),
                      "scored": len(eval_sheets) - len(failures),
                      "failed": len(failures)},
@@ -483,8 +501,13 @@ def _parse_config(spec: str) -> tuple[str, PipelineConfig]:
         raise ValueError(
             f"configuration {spec!r} is not"
             f" NAME[:seam=implementation,...]")
+    # a comma separates seams only when a seam name follows it; commas
+    # inside an implementation's own options ("rapidocr:scale=2,
+    # rotations=0/90") belong to that implementation
+    seam_names = "|".join(re.escape(f.name) for f in fields(PipelineConfig))
+    parts = re.split(rf",(?=(?:{seam_names})=)", rest) if rest else []
     selections = {}
-    for part in rest.split(",") if rest else []:
+    for part in parts:
         key, separator, value = part.partition("=")
         if not separator or not value:
             raise ValueError(

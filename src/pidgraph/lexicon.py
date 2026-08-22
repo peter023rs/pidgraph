@@ -120,3 +120,27 @@ def decode_tags(texts: list[TextDetection],
                 tag_grammar: Mapping[str, str]) -> list[TextDetection]:
     return [_decode(text, tag_grammar.get(text.text_class))
             for text in texts]
+
+
+def classify_candidate(candidate: str,
+                       tag_grammar: Mapping[str, str]) -> str | None:
+    """Which tag-grammar class a raw read belongs to — for a recognizer
+    that reads pixels without knowing the class (the stub reads it off
+    the annotations; a real engine cannot). Exact: the one class whose
+    grammar the read fullmatches. Failing that, the one class a
+    confusion-set repair reaches — the same reachability the decoder
+    repairs by, so the string itself is left for the decoder to fix.
+    Zero fits, several fits, or a read too degraded to enumerate all
+    give None: the adapter never guesses between grammars, and the
+    decoder then fails the read closed."""
+    exact = sorted(text_class for text_class, pattern in tag_grammar.items()
+                   if re.fullmatch(pattern, candidate))
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    variants = _variants(candidate)
+    if variants is None:
+        return None
+    reachable = sorted(
+        text_class for text_class, pattern in tag_grammar.items()
+        if any(re.fullmatch(pattern, variant) for variant in variants))
+    return reachable[0] if len(reachable) == 1 else None

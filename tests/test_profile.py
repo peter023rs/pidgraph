@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from pidgraph.model import UNCLASSIFIED_SYMBOL, LegendEntry
+from pidgraph.model import UNCLASSIFIED_SYMBOL, UNCLASSIFIED_TEXT, LegendEntry
 from pidgraph.pipeline import digitize
 from pidgraph.profile import ProfileError, load_profile
 
@@ -114,6 +114,18 @@ def test_the_reserved_unclassified_class_fails_at_load(tmp_path):
     rewrite(bundle, "legend.json",
             lambda d: d.__setitem__(UNCLASSIFIED_SYMBOL,
                                     {"role": "Equipment"}))
+
+    with pytest.raises(ProfileError, match="reserved"):
+        load_profile(bundle)
+
+
+def test_the_reserved_unclassified_text_class_fails_at_load(tmp_path):
+    """UNCLASSIFIED_TEXT is what an OCR engine's adapter emits for a read
+    no grammar class fits (ticket 18) — a tag grammar defining it would
+    let the decoder verify, and assembly trust, exactly those reads."""
+    bundle = editable_copy(tmp_path)
+    rewrite(bundle, "tag_grammar.json",
+            lambda d: d.__setitem__(UNCLASSIFIED_TEXT, ".*"))
 
     with pytest.raises(ProfileError, match="reserved"):
         load_profile(bundle)

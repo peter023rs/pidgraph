@@ -5,7 +5,10 @@ selected by configuration (hazop-ai's proven seam pattern):
                     selected as "trained:<artifact dir>", the Legend
                     Dictionary nearest-neighbor classifier (ticket 17)
                     as "legend-nn:<profile bundle dir>"
-  TextRecognizer  — stub today, the chosen OCR engine later (ticket 18)
+  TextRecognizer  — stub by default; the OCR engines (ticket 18) are
+                    selected by name — "rapidocr" (the chosen engine),
+                    "tesseract", "apple-vision", "easyocr" — optionally
+                    with ":scale=<n>,rotations=<a>/<b>"
   GraphStore      — Cypher-script emission by default; a live local Neo4j
                     loader is the configured alternative (ticket 09)
 
@@ -29,6 +32,7 @@ from .cypher_store import CypherScriptGraphStore
 from .detector import LegendNNSymbolDetector, TrainedSymbolDetector
 from .lexicon import CONFUSION_PAIRS
 from .neo4j_store import Neo4jGraphStore
+from .ocr import ENGINES
 from .model import (
     ConventionProfile,
     Provenance,
@@ -127,7 +131,7 @@ class StubTextRecognizer:
 SYMBOL_DETECTORS = {"stub": StubSymbolDetector,
                     "trained": TrainedSymbolDetector,
                     "legend-nn": LegendNNSymbolDetector}
-TEXT_RECOGNIZERS = {"stub": StubTextRecognizer}
+TEXT_RECOGNIZERS = {"stub": StubTextRecognizer, **ENGINES}
 GRAPH_STORES = {"cypher-script": CypherScriptGraphStore,
                 "neo4j": Neo4jGraphStore}
 

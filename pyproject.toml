@@ -14,6 +14,18 @@ dev = ["pytest>=7.0", "flask>=3.0", "pymupdf>=1.24"]
 neo4j = ["neo4j>=5.0"]
 workbench = ["flask>=3.0"]
 labelfactory = ["pymupdf>=1.24"]
+# The chosen OCR engine (ticket 18): PP-OCR models on ONNX Runtime via
+# RapidOCR — models ship in the wheel, inference is fully local.
+ocr = ["rapidocr>=3.0", "onnxruntime>=1.17"]
+# The other candidates the eval harness compared it against; install to
+# re-run the comparison (tesseract also needs the binary and language
+# data, EasyOCR a one-time model fetch, Vision is macOS-only).
+ocr-candidates = [
+    "pytesseract>=0.3", "Pillow>=10",
+    "easyocr>=1.7",
+    "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

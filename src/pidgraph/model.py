@@ -103,6 +103,14 @@ class ConventionProfile:
 # Dictionary may not define it as a real class (load_profile refuses).
 UNCLASSIFIED_SYMBOL = "unclassified"
 
+# The reserved text class an OCR engine's adapter emits for a read that
+# no tag-grammar class fits (ticket 18) — free text, a label outside the
+# Convention Profile's grammar, or a read smudged past classification.
+# It has no grammar by construction, so the lexicon decoder fails it
+# closed: it stays in the detection record for review and never names a
+# plant item, and a tag grammar may not define it (load_profile refuses).
+UNCLASSIFIED_TEXT = "unclassified"
+
 
 @dataclass(frozen=True)
 class Provenance:

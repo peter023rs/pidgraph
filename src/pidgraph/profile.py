@@ -26,7 +26,12 @@ import re
 from pathlib import Path
 
 from .dexpi import SEGMENT_CLASSES
-from .model import UNCLASSIFIED_SYMBOL, ConventionProfile, LegendEntry
+from .model import (
+    UNCLASSIFIED_SYMBOL,
+    UNCLASSIFIED_TEXT,
+    ConventionProfile,
+    LegendEntry,
+)
 
 ROLES = frozenset({
     "Equipment", "PipingComponent", "ProcessInstrumentationFunction",
@@ -130,6 +135,12 @@ def _tag_grammar(raw: dict, problems: list[str]) -> dict[str, str]:
                         "least one text class")
     grammar = {}
     for text_class, pattern in raw.items():
+        if text_class == UNCLASSIFIED_TEXT:
+            problems.append(
+                f"tag_grammar.json: {text_class!r} is reserved for reads no"
+                " grammar class fits — a tag grammar cannot define it as a"
+                " real text class")
+            continue
         if not isinstance(pattern, str):
             problems.append(f"tag_grammar.json: {text_class!r} must map to "
                             f"a regex string, got {pattern!r}")
